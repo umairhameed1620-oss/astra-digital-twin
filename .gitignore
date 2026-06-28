@@ -1,0 +1,40 @@
+# Dependencies
+node_modules/
+
+# Environment files (NEVER commit these)
+.env
+.env.local
+.env.production
+.env.staging
+
+# Build outputs
+build/
+dist/
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Test coverage
+coverage/
+.nyc_output/
+
+# Docker
+.docker/
+
+# IDE
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Secrets (extra protection)
+*.pem
+*.key
+*.cert
+secrets/

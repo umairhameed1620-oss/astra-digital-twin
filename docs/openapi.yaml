@@ -1,0 +1,581 @@
+openapi: 3.0.3
+info:
+  title: ASTRA API
+  description: |
+    # ASTRA — Aerospace Spacecraft Twin & Reality Architect
+
+    Enterprise-grade digital twin platform for satellites, rockets, space stations, and rovers.
+
+    ## Authentication
+    All endpoints except `/auth/register` and `/auth/login` require a Bearer JWT token.
+
+    ## Rate Limiting
+    - General endpoints: 100 requests per 15 minutes
+    - Auth endpoints: 10 requests per 15 minutes
+    - AI endpoints: 20 requests per minute
+
+    ## Roles
+    - `admin` — Full system access
+    - `engineer` — Create, read, update spacecraft and missions
+    - `viewer` — Read-only access
+
+  version: 2.0.0
+  contact:
+    name: FC Technologies
+    email: dev@fctechnologies.co.uk
+  license:
+    name: Proprietary
+
+servers:
+  - url: http://localhost:5001/api
+    description: Development
+  - url: https://api.astra.space/api
+    description: Production
+
+tags:
+  - name: Auth
+    description: Authentication and token management
+  - name: Spacecraft
+    description: Spacecraft digital twin management
+  - name: Simulation
+    description: Real-time physics simulation control
+  - name: Telemetry
+    description: Spacecraft telemetry data
+  - name: Missions
+    description: Mission planning and management
+  - name: AI
+    description: ARIA AI co-pilot
+  - name: Conjunction
+    description: Conjunction analysis and manoeuvre planning
+  - name: Reports
+    description: Mission report generation
+  - name: Admin
+    description: System administration (admin role required)
+  - name: System
+    description: Health and metrics endpoints
+
+paths:
+  /auth/register:
+    post:
+      tags: [Auth]
+      summary: Register a new user
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password]
+              properties:
+                name:
+                  type: string
+                  minLength: 2
+                  maxLength: 100
+                  example: Jane Foster
+                email:
+                  type: string
+                  format: email
+                  example: jane@astra.space
+                password:
+                  type: string
+                  minLength: 8
+                  description: Must contain uppercase, number, and special character
+                  example: Secure123!
+                organisation:
+                  type: string
+                  example: NASA
+      responses:
+        '201':
+          description: User registered successfully
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          $ref: '#/components/responses/Conflict'
+
+  /auth/login:
+    post:
+      tags: [Auth]
+      summary: Login and get tokens
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email:
+                  type: string
+                  format: email
+                password:
+                  type: string
+      responses:
+        '200':
+          description: Login successful
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuthResponse'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /auth/refresh:
+    post:
+      tags: [Auth]
+      summary: Refresh access token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [refreshToken]
+              properties:
+                refreshToken:
+                  type: string
+      responses:
+        '200':
+          description: Tokens refreshed
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+  /spacecraft:
+    get:
+      tags: [Spacecraft]
+      summary: List spacecraft twins
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/Page'
+        - $ref: '#/components/parameters/Limit'
+        - $ref: '#/components/parameters/Search'
+        - name: sortBy
+          in: query
+          schema:
+            type: string
+            enum: [created_at, name, type, status]
+        - name: sortOrder
+          in: query
+          schema:
+            type: string
+            enum: [asc, desc]
+      responses:
+        '200':
+          description: Paginated spacecraft list
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PaginatedSpacecraft'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+
+    post:
+      tags: [Spacecraft]
+      summary: Create a new spacecraft twin
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpacecraftInput'
+      responses:
+        '201':
+          description: Spacecraft created
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Spacecraft'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '429':
+          description: Spacecraft limit reached (max 50 per account)
+
+  /spacecraft/{id}:
+    get:
+      tags: [Spacecraft]
+      summary: Get spacecraft by ID
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SpacecraftId'
+      responses:
+        '200':
+          description: Spacecraft details
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Spacecraft'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+    put:
+      tags: [Spacecraft]
+      summary: Update spacecraft
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SpacecraftId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SpacecraftInput'
+      responses:
+        '200':
+          description: Updated spacecraft
+
+    delete:
+      tags: [Spacecraft]
+      summary: Soft-delete spacecraft
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SpacecraftId'
+      responses:
+        '200':
+          description: Spacecraft deleted (soft)
+
+  /simulation/start/{spacecraftId}:
+    post:
+      tags: [Simulation]
+      summary: Start spacecraft simulation
+      description: Initialises physics simulation. Connect via WebSocket to receive telemetry.
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SpacecraftId'
+      responses:
+        '200':
+          description: Simulation ready — connect via WebSocket
+
+  /simulation/stop/{spacecraftId}:
+    post:
+      tags: [Simulation]
+      summary: Stop spacecraft simulation
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SpacecraftId'
+      responses:
+        '200':
+          description: Simulation stopped
+
+  /telemetry/{spacecraftId}/history:
+    get:
+      tags: [Telemetry]
+      summary: Get telemetry history
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SpacecraftId'
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+      responses:
+        '200':
+          description: Telemetry history array
+
+  /ai/analyse:
+    post:
+      tags: [AI]
+      summary: Ask ARIA a question about a spacecraft
+      security:
+        - BearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [question]
+              properties:
+                spacecraftId:
+                  type: string
+                  format: uuid
+                telemetry:
+                  type: object
+                question:
+                  type: string
+                  maxLength: 2000
+                  example: What is the collision risk for this satellite?
+      responses:
+        '200':
+          description: ARIA response
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  response:
+                    type: string
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  /conjunction/{spacecraftId}:
+    get:
+      tags: [Conjunction]
+      summary: Get conjunction events for spacecraft
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SpacecraftId'
+      responses:
+        '200':
+          description: Conjunction analysis results
+
+  /conjunction/{spacecraftId}/manoeuvre:
+    get:
+      tags: [Conjunction]
+      summary: Get avoidance manoeuvre recommendation
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SpacecraftId'
+      responses:
+        '200':
+          description: Manoeuvre details with delta-V calculations
+
+  /reports/{spacecraftId}:
+    get:
+      tags: [Reports]
+      summary: Generate mission readiness report (HTML/PDF)
+      security:
+        - BearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/SpacecraftId'
+      responses:
+        '200':
+          description: HTML report file
+          content:
+            text/html:
+              schema:
+                type: string
+
+  /admin/stats:
+    get:
+      tags: [Admin]
+      summary: System-wide statistics
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Platform statistics
+        '403':
+          $ref: '#/components/responses/Forbidden'
+
+  /admin/users:
+    get:
+      tags: [Admin]
+      summary: List all users
+      security:
+        - BearerAuth: []
+      responses:
+        '200':
+          description: Paginated user list
+
+  /health:
+    get:
+      tags: [System]
+      summary: Health check
+      responses:
+        '200':
+          description: System health status
+
+  /metrics:
+    get:
+      tags: [System]
+      summary: Prometheus metrics
+      responses:
+        '200':
+          description: Prometheus metrics text
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  parameters:
+    SpacecraftId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+        format: uuid
+    Page:
+      name: page
+      in: query
+      schema:
+        type: integer
+        default: 1
+        minimum: 1
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        default: 20
+        minimum: 1
+        maximum: 100
+    Search:
+      name: search
+      in: query
+      schema:
+        type: string
+        maxLength: 200
+
+  schemas:
+    AuthResponse:
+      type: object
+      properties:
+        token:
+          type: string
+          description: JWT access token (15 min expiry)
+        refreshToken:
+          type: string
+          description: Refresh token (7 day expiry)
+        user:
+          $ref: '#/components/schemas/User'
+
+    User:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        email:
+          type: string
+        role:
+          type: string
+          enum: [admin, engineer, viewer]
+        organisation:
+          type: string
+
+    Spacecraft:
+      type: object
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+        type:
+          type: string
+          enum: [satellite, rocket, station, rover]
+        description:
+          type: string
+        status:
+          type: string
+          enum: [designed, simulating, archived]
+        components:
+          type: array
+          items:
+            type: object
+        config:
+          type: object
+          properties:
+            altitude:
+              type: number
+            inclination:
+              type: number
+            deltaV:
+              type: number
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+
+    SpacecraftInput:
+      type: object
+      required: [name, type]
+      properties:
+        name:
+          type: string
+          minLength: 1
+          maxLength: 150
+        type:
+          type: string
+          enum: [satellite, rocket, station, rover]
+        description:
+          type: string
+          maxLength: 1000
+        components:
+          type: array
+        config:
+          type: object
+
+    PaginatedSpacecraft:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Spacecraft'
+        pagination:
+          type: object
+          properties:
+            total:
+              type: integer
+            page:
+              type: integer
+            limit:
+              type: integer
+            totalPages:
+              type: integer
+            hasNextPage:
+              type: boolean
+            hasPrevPage:
+              type: boolean
+
+  responses:
+    Unauthorized:
+      description: Authentication required or token invalid
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              code:
+                type: string
+    Forbidden:
+      description: Insufficient permissions
+    NotFound:
+      description: Resource not found
+    ValidationError:
+      description: Request validation failed
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+              details:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    field:
+                      type: string
+                    message:
+                      type: string
+    Conflict:
+      description: Resource already exists
