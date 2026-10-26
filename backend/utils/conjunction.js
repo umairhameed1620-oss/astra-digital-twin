@@ -242,6 +242,7 @@ const screenDetailed = async (sc, fleet = [], { hours = WINDOW_HOURS, force = fa
         candidatesScreened: raw.screened,
         candidatesFailed: raw.failed,
         fleetTwinsScreened: others.length,
+        colocatedObjects: raw.colocated || [],
         catalogFetchedAt: new Date(cat.fetchedAt).toISOString(),
         catalogStale: !!cat.stale,
         sources: cat.sources,

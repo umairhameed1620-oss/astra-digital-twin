@@ -178,6 +178,9 @@ const ConjunctionPage = () => {
           <span><strong style={{ color: 'var(--accent-primary)' }}>{Number(scr.candidatesScreened).toLocaleString()}</strong> in the altitude shell, propagated with SGP4</span>
           <span>Window: next {scr.windowHours} h · alert radius {scr.reportThresholdKm} km</span>
           <span>Data: {new Date(scr.catalogFetchedAt).toLocaleString()}{scr.catalogStale ? ' (STALE — CelesTrak unreachable)' : ''}</span>
+          {scr.colocatedObjects?.length > 0 && (
+            <span style={{ flexBasis: '100%' }}>🔗 Not counted as close approaches (stay within a few km all the time, e.g. docked modules): {scr.colocatedObjects.map((o) => `${o.name} (${o.id})`).join(', ')}</span>
+          )}
           <span style={{ color: 'var(--text-muted)', flexBasis: '100%' }}>{scr.pcModel} Confirm with Space-Track / EU SST CDMs before manoeuvring.</span>
         </div>
       )}

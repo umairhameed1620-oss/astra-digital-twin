@@ -62,6 +62,8 @@ const goldenMin = (f, lo, hi) => {
 };
 
 const events = [];
+const colocated = []; // objects attached to / flying with the twin (e.g. other ISS modules)
+const COLOC_KM = Number(process.env.CONJ_COLOCATED_KM) || 5;
 let screened = 0;
 let failed = 0;
 
@@ -73,6 +75,7 @@ const screenObject = (objState, meta) => {
     return O.norm(O.sub(p.r, q.r));
   };
   const found = [];
+  const mine = [];
 
   const check = (k, dk, dPrev, dNext) => {
     if (!(dk < COARSE_KM && dk <= dPrev && dk <= dNext)) return;
@@ -84,7 +87,7 @@ const screenObject = (objState, meta) => {
     found.push(m.t);
     const p = objState(m.t);
     const q = twinState(m.t);
-    events.push({
+    mine.push({
       objectName: meta.name,
       objectId: meta.id,
       source: meta.source,
@@ -100,15 +103,24 @@ const screenObject = (objState, meta) => {
 
   let d0 = Infinity;
   let d1 = Infinity;
+  let maxD = 0;
   for (let i = 0; i < N; i++) {
     const p = objState(startMs + i * stepMs);
     if (!p) return false;
     const d = Math.hypot(p.r.x - tx[i], p.r.y - ty[i], p.r.z - tz[i]);
+    if (d > maxD) maxD = d;
     if (i >= 1) check(i - 1, d1, d0, d);
     d0 = d1;
     d1 = d;
   }
   check(N - 1, d1, d0, Infinity);
+  // Never more than a few km away during the whole window: docked, attached or formation flying,
+  // not a conjunction. Report it once instead of as a close approach every orbit step.
+  if (maxD < COLOC_KM) {
+    colocated.push({ name: meta.name, id: meta.id, maxKm: Number(maxD.toFixed(3)) });
+    return true;
+  }
+  events.push(...mine);
   return true;
 };
 
@@ -135,4 +147,4 @@ for (const o of others) {
   });
 }
 
-parentPort.postMessage({ events, screened, failed, steps: N });
+parentPort.postMessage({ events, screened, failed, steps: N, colocated });
