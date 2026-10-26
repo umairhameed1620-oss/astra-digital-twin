@@ -68,13 +68,15 @@ const ConjunctionPage = () => {
 
   useEffect(() => {
     if (!selectedSc) return;
-    setLoading(true); setError(''); setReport(null); setPlan(null); setThreat(null); setNotice('');
+    let current = true; // ignore a slower response for a twin that is no longer selected
+    setLoading(true); setError(''); setReport(null); setPlan(null); setThreat(null); setNotice(''); setCdms([]);
     cjApi.screen(selectedSc)
-      .then((r) => setReport({ ...r.data, events: Array.isArray(r.data?.events) ? r.data.events : [] }))
-      .catch((err) => setError(errorText(err, 'Conjunction screening failed. See backend logs for details.')))
-      .finally(() => setLoading(false));
-    loadCdms(selectedSc);
-  }, [selectedSc, loadCdms]);
+      .then((r) => { if (current) setReport({ ...r.data, events: Array.isArray(r.data?.events) ? r.data.events : [] }); })
+      .catch((err) => { if (current) setError(errorText(err, 'Conjunction screening failed. See backend logs for details.')); })
+      .finally(() => { if (current) setLoading(false); });
+    scApi.cdms(selectedSc).then((r) => { if (current) setCdms(r.data.data || []); }).catch(() => { if (current) setCdms([]); });
+    return () => { current = false; };
+  }, [selectedSc]);
 
   useEffect(() => {
     if (tab !== 'manoeuvre' || !selectedSc || !report || plan) return;
@@ -135,9 +137,22 @@ const ConjunctionPage = () => {
     e.target.value = '';
   };
 
+  // Upcoming CDMs are risks too: classify them with the same thresholds as screening events.
+  const thr = report?.screening?.thresholds || { critical: 1e-4, warning: 1e-6 };
+  const cdmRisks = cdms
+    .filter((c) => new Date(c.tca) > new Date())
+    .map((c) => {
+      const pc = c.pc_foster != null ? Number(c.pc_foster) : c.pc_reported != null ? Number(c.pc_reported) : null;
+      const miss = c.miss_km != null ? Number(c.miss_km) : null;
+      const severity = c.parsed?.emergency ? 'critical'
+        : pc != null && pc >= thr.critical ? 'critical'
+          : (pc != null && pc >= thr.warning) || (miss != null && miss < 1) ? 'warning' : 'nominal';
+      return { ...c, pc, miss, severity };
+    })
+    .sort((a, b) => new Date(a.tca) - new Date(b.tca));
   const total = Number(report?.totalEvents ?? 0);
-  const critical = Number(report?.criticalCount ?? 0);
-  const warning = Number(report?.warningCount ?? 0);
+  const critical = Number(report?.criticalCount ?? 0) + cdmRisks.filter((c) => c.severity === 'critical').length;
+  const warning = Number(report?.warningCount ?? 0) + cdmRisks.filter((c) => c.severity === 'warning').length;
   const scr = report?.screening;
 
   return (
@@ -190,7 +205,7 @@ const ConjunctionPage = () => {
           <Stat label="Close approaches" value={total} color="var(--accent-primary)" />
           <Stat label="Critical" value={critical} color="var(--accent-red)" />
           <Stat label="Warning" value={warning} color="var(--accent-amber)" />
-          <Stat label="Upcoming CDMs" value={report.upcomingCdms ?? cdms.filter((c) => new Date(c.tca) > new Date()).length} color="var(--accent-green)" />
+          <Stat label="Upcoming CDMs" value={cdmRisks.length} color="var(--accent-green)" />
         </div>
       )}
 
@@ -208,6 +223,40 @@ const ConjunctionPage = () => {
 
       {!loading && tab === 'events' && report && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {cdmRisks.map((c) => {
+            const sev = c.severity;
+            const h = ((new Date(c.tca) - Date.now()) / 3600000).toFixed(1);
+            return (
+              <div key={`cdm-${c.id}`} className="card" style={{ borderLeft: `3px solid ${sevColor[sev]}` }}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>{c.object_name || c.object_id || 'Unknown object'}</div>
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+                      <span className={`badge ${sevBadge[sev]}`}>{sev.toUpperCase()}</span>
+                      {c.object_id && <span className="badge badge-satellite">NORAD {c.object_id}</span>}
+                      <span style={{ fontSize: 10, color: 'var(--accent-primary)' }}>📄 From CDM ({c.source === 'spacetrack' ? 'Space-Track' : 'uploaded'})</span>
+                    </div>
+                  </div>
+                  <div style={{ textAlign: 'right' }}>
+                    <div style={{ fontFamily: 'var(--font-mono)', fontSize: 22, color: sevColor[sev], fontWeight: 700 }}>{h}h</div>
+                    <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>to TCA</div>
+                  </div>
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12 }}>
+                  <Cell label="Miss distance" value={c.miss != null ? `${c.miss.toFixed(3)} km` : '—'} />
+                  <Cell label="Pc (Foster)" value={c.pc_foster != null ? Number(c.pc_foster).toExponential(1) : '—'} />
+                  <Cell label="Pc (reported)" value={c.pc_reported != null ? Number(c.pc_reported).toExponential(1) : '—'} />
+                  <Cell label="TCA" value={utc(c.tca)} />
+                </div>
+                {sev !== 'nominal' && (
+                  <div style={{ marginTop: 12, padding: '10px 14px', background: sevBg[sev], borderRadius: 6, fontSize: 13, color: 'var(--text-secondary)' }}>
+                    <strong style={{ color: sevColor[sev] }}>Recommendation: </strong>
+                    {sev === 'critical' ? 'Official CDM shows high risk. Coordinate with the other operator and prepare a manoeuvre.' : 'Monitor the CDM updates for this event and keep a contingency manoeuvre ready.'}
+                  </div>
+                )}
+              </div>
+            );
+          })}
           {report.events.length === 0 ? (
             <div className="card" style={{ textAlign: 'center', padding: 60 }}>
               <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
