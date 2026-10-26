@@ -2,36 +2,79 @@ import React, { useState, useEffect } from 'react';
 import { spacecraft as scApi } from '../utils/api';
 import API from '../utils/api';
 
+// Accepts any API response shape and returns the spacecraft array
+const toList = (res) => {
+  const body = res && res.data !== undefined ? res.data : res;
+  const candidates = [
+    body,
+    body?.data,
+    body?.spacecraft,
+    body?.data?.spacecraft,
+    body?.items,
+    body?.data?.items,
+    body?.results,
+  ];
+  return candidates.find(Array.isArray) || [];
+};
+
+// Accepts any API response shape and returns the inner object
+const toObj = (res, key) => {
+  const body = res && res.data !== undefined ? res.data : res;
+  if (body && body[key] !== undefined) return body;
+  if (body?.data && body.data[key] !== undefined) return body.data;
+  return body?.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data : body;
+};
+
 const ConjunctionPage = () => {
   const [spacecraft, setSpacecraft] = useState([]);
   const [selectedSc, setSelectedSc] = useState('');
   const [events, setEvents] = useState(null);
   const [manoeuvre, setManoeuvre] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [listLoading, setListLoading] = useState(true);
+  const [error, setError] = useState('');
   const [tab, setTab] = useState('events');
 
   useEffect(() => {
-    scApi.getAll().then(res => {
-      const scs = res.data?.data || [];
-      setSpacecraft(scs);
-      if (scs.length) setSelectedSc(scs[0].id);
-    });
+    scApi.getAll()
+      .then(res => {
+        const scs = toList(res);
+        setSpacecraft(scs);
+        if (scs.length) setSelectedSc(String(scs[0].id));
+      })
+      .catch(err => {
+        console.error(err);
+        setError('Could not load spacecraft. Check that the backend is running.');
+      })
+      .finally(() => setListLoading(false));
   }, []);
 
   useEffect(() => {
     if (!selectedSc) return;
     setLoading(true);
+    setError('');
     Promise.all([
       API.get(`/conjunction/${selectedSc}`),
       API.get(`/conjunction/${selectedSc}/manoeuvre`),
     ]).then(([e, m]) => {
-      setEvents(e.data);
-      setManoeuvre(m.data);
-    }).catch(console.error).finally(() => setLoading(false));
+      const ev = toObj(e, 'events');
+      setEvents({ ...ev, events: Array.isArray(ev?.events) ? ev.events : [] });
+      const mv = toObj(m, 'manoeuvre');
+      setManoeuvre(mv && mv.manoeuvre ? mv : null);
+    }).catch(err => {
+      console.error(err);
+      setEvents(null);
+      setManoeuvre(null);
+      setError('Conjunction analysis failed for this spacecraft. See backend logs for details.');
+    }).finally(() => setLoading(false));
   }, [selectedSc]);
 
   const sevColor = { critical: 'var(--accent-red)', warning: 'var(--accent-amber)', nominal: 'var(--accent-green)' };
   const sevBadge = { critical: 'badge-critical', warning: 'badge-warning', nominal: 'badge-nominal' };
+
+  const total = Number(events?.totalEvents ?? events?.events?.length ?? 0);
+  const critical = Number(events?.criticalCount ?? 0);
+  const warning = Number(events?.warningCount ?? 0);
 
   return (
     <div className="animate-in">
@@ -42,19 +85,27 @@ const ConjunctionPage = () => {
             <h1 style={{ fontSize: 24, fontWeight: 600 }}>Space Traffic Management</h1>
             <p style={{ color: 'var(--text-secondary)', fontSize: 13, marginTop: 4 }}>Close approach detection · Collision probability · Avoidance manoeuvres</p>
           </div>
-          <select value={selectedSc} onChange={e => setSelectedSc(e.target.value)} style={{ width: 240 }}>
-            {spacecraft.map(sc => <option key={sc.id} value={sc.id}>{sc.name}</option>)}
+          <select value={selectedSc} onChange={e => setSelectedSc(e.target.value)} style={{ width: 240 }} disabled={!spacecraft.length}>
+            {listLoading && <option value="">Loading spacecraft…</option>}
+            {!listLoading && !spacecraft.length && <option value="">No spacecraft — create one in Builder</option>}
+            {spacecraft.map(sc => <option key={sc.id} value={String(sc.id)}>{sc.name}</option>)}
           </select>
         </div>
       </div>
 
+      {error && (
+        <div className="card" style={{ marginBottom: 20, borderLeft: '3px solid var(--accent-red)', color: 'var(--accent-red)', fontSize: 13 }}>
+          {error}
+        </div>
+      )}
+
       {events && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
           {[
-            { label: 'Total Events', value: events.totalEvents, color: 'var(--accent-primary)' },
-            { label: 'Critical', value: events.criticalCount, color: 'var(--accent-red)' },
-            { label: 'Warning', value: events.warningCount, color: 'var(--accent-amber)' },
-            { label: 'Nominal', value: events.totalEvents - events.criticalCount - events.warningCount, color: 'var(--accent-green)' },
+            { label: 'Total Events', value: total, color: 'var(--accent-primary)' },
+            { label: 'Critical', value: critical, color: 'var(--accent-red)' },
+            { label: 'Warning', value: warning, color: 'var(--accent-amber)' },
+            { label: 'Nominal', value: Math.max(0, total - critical - warning), color: 'var(--accent-green)' },
           ].map(s => (
             <div key={s.label} className="card" style={{ textAlign: 'center' }}>
               <div style={{ fontFamily: 'var(--font-mono)', fontSize: 32, color: s.color, fontWeight: 700 }}>{s.value}</div>
@@ -83,41 +134,52 @@ const ConjunctionPage = () => {
                   <div style={{ fontSize: 40, marginBottom: 12 }}>✅</div>
                   <div style={{ color: 'var(--accent-green)' }}>No conjunction events detected</div>
                 </div>
-              ) : events.events.map(ev => (
-                <div key={ev.id} className="card" style={{ borderLeft: `3px solid ${sevColor[ev.severity]}` }}>
-                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
-                    <div>
-                      <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>{ev.objectName}</div>
-                      <div style={{ display: 'flex', gap: 8 }}>
-                        <span className={`badge ${sevBadge[ev.severity]}`}>{ev.severity.toUpperCase()}</span>
-                        <span className="badge badge-satellite">{ev.objectId}</span>
+              ) : events.events.map((ev, i) => {
+                const sev = sevColor[ev.severity] ? ev.severity : 'nominal';
+                return (
+                  <div key={ev.id || i} className="card" style={{ borderLeft: `3px solid ${sevColor[sev]}` }}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', marginBottom: 12 }}>
+                      <div>
+                        <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>{ev.objectName}</div>
+                        <div style={{ display: 'flex', gap: 8 }}>
+                          <span className={`badge ${sevBadge[sev]}`}>{sev.toUpperCase()}</span>
+                          <span className="badge badge-satellite">{ev.objectId}</span>
+                        </div>
+                      </div>
+                      <div style={{ textAlign: 'right' }}>
+                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 22, color: sevColor[sev], fontWeight: 700 }}>
+                          {ev.hoursToTCA}h
+                        </div>
+                        <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>to TCA</div>
                       </div>
                     </div>
-                    <div style={{ textAlign: 'right' }}>
-                      <div style={{ fontFamily: 'var(--font-mono)', fontSize: 22, color: sevColor[ev.severity], fontWeight: 700 }}>
-                        {ev.hoursToTCA}h
-                      </div>
-                      <div style={{ fontSize: 11, color: 'var(--text-muted)' }}>to TCA</div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
+                      {[
+                        ['Miss Distance', `${ev.missDistance} km`],
+                        ['Rel. Velocity', `${ev.relativeVelocity} km/s`],
+                        ['Collision Pc', ev.collisionProbability],
+                        ['TCA', ev.tcaTime ? new Date(ev.tcaTime).toLocaleString() : '—'],
+                      ].map(([l, v]) => (
+                        <div key={l} style={{ background: 'var(--bg-secondary)', padding: '10px 12px', borderRadius: 6 }}>
+                          <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{l}</div>
+                          <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-primary)' }}>{v}</div>
+                        </div>
+                      ))}
                     </div>
-                  </div>
-                  <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 12 }}>
-                    {[
-                      ['Miss Distance', `${ev.missDistance} km`],
-                      ['Rel. Velocity', `${ev.relativeVelocity} km/s`],
-                      ['Collision Pc', ev.collisionProbability],
-                      ['TCA', new Date(ev.tcaTime).toLocaleString()],
-                    ].map(([l, v]) => (
-                      <div key={l} style={{ background: 'var(--bg-secondary)', padding: '10px 12px', borderRadius: 6 }}>
-                        <div style={{ fontSize: 10, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 4 }}>{l}</div>
-                        <div style={{ fontFamily: 'var(--font-mono)', fontSize: 13, color: 'var(--text-primary)' }}>{v}</div>
+                    {ev.recommendation && (
+                      <div style={{ padding: '10px 14px', background: sev === 'critical' ? 'rgba(255,68,68,0.08)' : sev === 'warning' ? 'rgba(255,170,0,0.08)' : 'rgba(0,255,136,0.08)', borderRadius: 6, fontSize: 13, color: 'var(--text-secondary)' }}>
+                        <strong style={{ color: sevColor[sev] }}>ARIA Recommendation: </strong>{ev.recommendation}
                       </div>
-                    ))}
+                    )}
                   </div>
-                  <div style={{ padding: '10px 14px', background: ev.severity === 'critical' ? 'rgba(255,68,68,0.08)' : ev.severity === 'warning' ? 'rgba(255,170,0,0.08)' : 'rgba(0,255,136,0.08)', borderRadius: 6, fontSize: 13, color: 'var(--text-secondary)' }}>
-                    <strong style={{ color: sevColor[ev.severity] }}>ARIA Recommendation: </strong>{ev.recommendation}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
+            </div>
+          )}
+
+          {tab === 'manoeuvre' && !manoeuvre && !error && selectedSc && (
+            <div className="card" style={{ textAlign: 'center', padding: 60, color: 'var(--text-muted)' }}>
+              No manoeuvre required for this spacecraft.
             </div>
           )}
 
@@ -139,10 +201,10 @@ const ConjunctionPage = () => {
                     </div>
                   </div>
                 </div>
-                {Object.entries(manoeuvre.manoeuvre).map(([k, v]) => (
+                {Object.entries(manoeuvre.manoeuvre || {}).map(([k, v]) => (
                   <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '8px 0', borderBottom: '1px solid var(--border)' }}>
                     <span style={{ fontSize: 12, color: 'var(--text-muted)', textTransform: 'capitalize' }}>{k.replace(/([A-Z])/g, ' $1').trim()}</span>
-                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--accent-primary)' }}>{v}</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: 'var(--accent-primary)' }}>{String(v)}</span>
                   </div>
                 ))}
               </div>
@@ -161,7 +223,10 @@ const ConjunctionPage = () => {
                     <span style={{ fontFamily: 'var(--font-mono)', color: parseFloat(manoeuvre.budgetAfterManoeuvre) < 100 ? 'var(--accent-red)' : 'var(--accent-amber)' }}>{manoeuvre.budgetAfterManoeuvre} m/s</span>
                   </div>
                   <div style={{ height: 8, background: 'var(--bg-secondary)', borderRadius: 4, overflow: 'hidden' }}>
-                    <div style={{ width: `${(parseFloat(manoeuvre.budgetAfterManoeuvre) / manoeuvre.deltaVBudgetRemaining) * 100}%`, height: '100%', background: 'var(--accent-amber)', borderRadius: 4, transition: 'width 1s' }} />
+                    <div style={{
+                      width: `${Math.max(0, Math.min(100, (parseFloat(manoeuvre.budgetAfterManoeuvre) / (parseFloat(manoeuvre.deltaVBudgetRemaining) || 1)) * 100))}%`,
+                      height: '100%', background: 'var(--accent-amber)', borderRadius: 4, transition: 'width 1s'
+                    }} />
                   </div>
                 </div>
                 {manoeuvre.warning && (
@@ -174,8 +239,8 @@ const ConjunctionPage = () => {
                   <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
                     1. T-24h: Verify tracking data<br />
                     2. T-6h: Upload manoeuvre parameters<br />
-                    3. TCA-24h: Execute Burn 1 ({manoeuvre.manoeuvre.dv1})<br />
-                    4. T+{manoeuvre.manoeuvre.transferTime}: Execute Burn 2 ({manoeuvre.manoeuvre.dv2})<br />
+                    3. TCA-24h: Execute Burn 1 ({manoeuvre.manoeuvre?.dv1})<br />
+                    4. T+{manoeuvre.manoeuvre?.transferTime}: Execute Burn 2 ({manoeuvre.manoeuvre?.dv2})<br />
                     5. Verify new orbit, update TLE
                   </div>
                 </div>

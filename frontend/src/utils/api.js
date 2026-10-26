@@ -13,11 +13,19 @@ API.interceptors.response.use(
   err => {
     if (err.response?.status === 401) {
       localStorage.removeItem('astra_token');
-      window.location.href = '/login';
+      localStorage.removeItem('astra_user');
+      window.location.href = '/';
     }
     return Promise.reject(err);
   }
 );
+
+// Helper to always get array from response
+const toArray = (res) => {
+  if (Array.isArray(res.data)) return { data: res.data };
+  if (res.data?.data) return res.data;
+  return { data: [], pagination: { total: 0 } };
+};
 
 export const auth = {
   login: (data) => API.post('/auth/login', data),
@@ -25,7 +33,7 @@ export const auth = {
 };
 
 export const spacecraft = {
-  getAll: () => API.get('/spacecraft'),
+  getAll: () => API.get('/spacecraft').then(toArray),
   getOne: (id) => API.get(`/spacecraft/${id}`),
   create: (data) => API.post('/spacecraft', data),
   update: (id, data) => API.put(`/spacecraft/${id}`, data),
@@ -33,7 +41,7 @@ export const spacecraft = {
 };
 
 export const missions = {
-  getAll: () => API.get('/missions'),
+  getAll: () => API.get('/missions').then(toArray),
   create: (data) => API.post('/missions', data),
 };
 

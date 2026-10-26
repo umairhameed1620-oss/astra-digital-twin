@@ -9,7 +9,7 @@ const VisualisePage = () => {
 
   useEffect(() => {
     scApi.getAll().then(res => {
-      setSpacecraft(res.data?.data || []);
+      const scArr = Array.isArray(res.data) ? res.data : (res.data?.data || []); setSpacecraft(scArr);
       if (res.data?.data?.length) setSelectedId(res.data.data[0].id);
     }).catch(console.error).finally(() => setLoading(false));
   }, []);

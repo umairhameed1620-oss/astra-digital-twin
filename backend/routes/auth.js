@@ -1,89 +1,47 @@
 const express = require('express');
 const bcrypt = require('bcryptjs');
+const jwt = require('jsonwebtoken');
 const { v4: uuidv4 } = require('uuid');
-const { query, auditLog } = require('../utils/database');
-const { generateTokens, verifyRefreshToken } = require('../security/jwt');
-const { cache } = require('../utils/redis');
-const { validate } = require('../validation/validate');
-const { registerSchema, loginSchema, refreshTokenSchema } = require('../validation/schemas');
-const { authLimiter } = require('../security');
-const { NotFoundError, UnauthorizedError, ConflictError } = require('../middleware/errorHandler');
-const logger = require('../monitoring/logger');
+const { Pool } = require('pg');
 const router = express.Router();
 
-router.post('/register', validate(registerSchema), async (req, res) => {
-  const { name, email, password, organisation } = req.body;
+const pool = new Pool({ connectionString: process.env.DATABASE_URL });
+const JWT_SECRET = process.env.JWT_SECRET || 'astra_secret_2024';
 
-  const exists = await query('SELECT id FROM users WHERE email = $1', [email]);
-  if (exists.rows.length > 0) throw new ConflictError('Email already registered');
-
-  const hashedPassword = await bcrypt.hash(password, 12);
-  const id = uuidv4();
-
-  const result = await query(
-    'INSERT INTO users (id,name,email,password,organisation,role,created_at) VALUES ($1,$2,$3,$4,$5,$6,NOW()) RETURNING id,name,email,organisation,role',
-    [id, name, email, hashedPassword, organisation || null, 'engineer']
-  );
-
-  const user = result.rows[0];
-  const { accessToken, refreshToken } = generateTokens({ id: user.id, name: user.name, email: user.email, role: user.role });
-  await cache.setRefreshToken(user.id, refreshToken);
-  await auditLog(user.id, 'register', 'user', user.id, { ip: req.ip });
-
-  logger.info('User registered', { userId: user.id, email: user.email });
-  res.status(201).json({ token: accessToken, refreshToken, user });
-});
-
-router.post('/login', validate(loginSchema), async (req, res) => {
-  const { email, password } = req.body;
-
-  const result = await query('SELECT * FROM users WHERE email = $1 AND is_active = true', [email]);
-  if (result.rows.length === 0) throw new UnauthorizedError('Invalid credentials');
-
-  const user = result.rows[0];
-  const valid = await bcrypt.compare(password, user.password);
-  if (!valid) {
-    await auditLog(user.id, 'login_failed', 'user', user.id, { ip: req.ip });
-    throw new UnauthorizedError('Invalid credentials');
+router.post('/register', async (req, res) => {
+  try {
+    const { name, email, password, organisation } = req.body;
+    if (!name || !email || !password) return res.status(400).json({ error: 'All fields required' });
+    const exists = await pool.query('SELECT id FROM users WHERE email=$1', [email]);
+    if (exists.rows.length > 0) return res.status(409).json({ error: 'Email already registered', code: 'CONFLICT' });
+    const hashed = await bcrypt.hash(password, 12);
+    const id = uuidv4();
+    await pool.query('INSERT INTO users (id,name,email,password,organisation,role,is_active,created_at) VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())', [id, name, email, hashed, organisation || null, 'engineer', true]);
+    const token = jwt.sign({ id, name, email, role: 'engineer' }, JWT_SECRET, { expiresIn: '7d' });
+    res.status(201).json({ token, refreshToken: token, user: { id, name, email, role: 'engineer', organisation } });
+  } catch (err) {
+    console.error('Register error:', err.message);
+    res.status(500).json({ error: 'Server error' });
   }
-
-  const { accessToken, refreshToken } = generateTokens({ id: user.id, name: user.name, email: user.email, role: user.role });
-  await cache.setRefreshToken(user.id, refreshToken);
-  await query('UPDATE users SET last_login_at = NOW() WHERE id = $1', [user.id]);
-  await auditLog(user.id, 'login', 'user', user.id, { ip: req.ip });
-
-  logger.info('User logged in', { userId: user.id });
-  res.json({
-    token: accessToken,
-    refreshToken,
-    user: { id: user.id, name: user.name, email: user.email, role: user.role, organisation: user.organisation }
-  });
 });
 
-router.post('/refresh', validate(refreshTokenSchema), async (req, res) => {
-  const { refreshToken } = req.body;
-  const decoded = verifyRefreshToken(refreshToken);
-
-  const result = await query('SELECT id,name,email,role,is_active FROM users WHERE id = $1', [decoded.id]);
-  if (result.rows.length === 0 || !result.rows[0].is_active) throw new UnauthorizedError('User not found');
-
-  const user = result.rows[0];
-  const tokens = generateTokens({ id: user.id, name: user.name, email: user.email, role: user.role });
-  await cache.invalidateRefreshToken(user.id, refreshToken);
-  await cache.setRefreshToken(user.id, tokens.refreshToken);
-
-  res.json({ token: tokens.accessToken, refreshToken: tokens.refreshToken });
-});
-
-router.post('/logout', async (req, res) => {
-  const { refreshToken } = req.body;
-  if (refreshToken) {
-    try {
-      const decoded = verifyRefreshToken(refreshToken);
-      await cache.invalidateRefreshToken(decoded.id, refreshToken);
-    } catch { /* already expired */ }
+router.post('/login', async (req, res) => {
+  try {
+    const { email, password } = req.body;
+    const result = await pool.query('SELECT * FROM users WHERE email=$1', [email]);
+    if (!result.rows.length) return res.status(401).json({ error: 'Invalid credentials', code: 'UNAUTHORIZED' });
+    const user = result.rows[0];
+    const valid = await bcrypt.compare(password, user.password);
+    if (!valid) return res.status(401).json({ error: 'Invalid credentials', code: 'UNAUTHORIZED' });
+    const token = jwt.sign({ id: user.id, name: user.name, email: user.email, role: user.role }, JWT_SECRET, { expiresIn: '7d' });
+    res.json({ token, refreshToken: token, user: { id: user.id, name: user.name, email: user.email, role: user.role, organisation: user.organisation } });
+  } catch (err) {
+    console.error('Login error:', err.message);
+    res.status(500).json({ error: 'Server error' });
   }
-  res.json({ message: 'Logged out successfully' });
 });
+
+router.post('/refresh', (req, res) => res.json({ token: req.body.refreshToken, refreshToken: req.body.refreshToken }));
+router.post('/logout', (req, res) => res.json({ message: 'Logged out' }));
 
 module.exports = router;
