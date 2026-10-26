@@ -40,8 +40,8 @@ app.get('/api/telemetry/:id/history', auth, (req, res) => res.json([]));
 app.post('/api/telemetry/:id/log', auth, (req, res) => res.json({ message: 'Logged' }));
 app.post('/api/ai/analyse', auth, (req, res) => res.json({ response: 'ARIA AI offline. Add ANTHROPIC_API_KEY to enable.', timestamp: new Date().toISOString() }));
 app.post('/api/ai/briefing', auth, (req, res) => res.json({ briefing: 'ARIA offline.', timestamp: new Date().toISOString() }));
-app.get('/api/conjunction/:id', auth, (req, res) => res.json({ spacecraftId: req.params.id, totalEvents: 2, criticalCount: 0, warningCount: 1, events: [{ id: 'c1', objectName: 'COSMOS 2251 Debris', objectId: 'DEB-001', hoursToTCA: '18.5', missDistance: '0.842', relativeVelocity: '7.23', collisionProbability: '1.2e-4', severity: 'warning', tcaTime: new Date(Date.now()+66600000).toISOString(), recommendation: 'Monitor closely.' }, { id: 'c2', objectName: 'FENGYUN 1C Debris', objectId: 'DEB-042', hoursToTCA: '36.2', missDistance: '3.241', relativeVelocity: '5.87', collisionProbability: '8.4e-6', severity: 'nominal', tcaTime: new Date(Date.now()+130320000).toISOString(), recommendation: 'No action required.' }] }));
-app.get('/api/conjunction/:id/manoeuvre', auth, (req, res) => res.json({ currentAltitude: 550, recommendedAltitude: 552, manoeuvre: { type: 'Hohmann Transfer', dv1: '0.82 m/s', dv2: '0.81 m/s', totalDeltaV: '1.63 m/s', transferTime: '48.2 minutes', fuelEstimate: '0.16 kg', executionWindow: 'T-24h before TCA', burnDuration: '0.1 seconds' }, deltaVBudgetRemaining: 500, budgetAfterManoeuvre: '498.4', warning: null }));
+app.get('/api/conjunction-demo/:id', auth, (req, res) => res.json({ spacecraftId: req.params.id, totalEvents: 2, criticalCount: 0, warningCount: 1, events: [{ id: 'c1', objectName: 'COSMOS 2251 Debris', objectId: 'DEB-001', hoursToTCA: '18.5', missDistance: '0.842', relativeVelocity: '7.23', collisionProbability: '1.2e-4', severity: 'warning', tcaTime: new Date(Date.now()+66600000).toISOString(), recommendation: 'Monitor closely.' }, { id: 'c2', objectName: 'FENGYUN 1C Debris', objectId: 'DEB-042', hoursToTCA: '36.2', missDistance: '3.241', relativeVelocity: '5.87', collisionProbability: '8.4e-6', severity: 'nominal', tcaTime: new Date(Date.now()+130320000).toISOString(), recommendation: 'No action required.' }] }));
+app.get('/api/conjunction-demo/:id/manoeuvre', auth, (req, res) => res.json({ currentAltitude: 550, recommendedAltitude: 552, manoeuvre: { type: 'Hohmann Transfer', dv1: '0.82 m/s', dv2: '0.81 m/s', totalDeltaV: '1.63 m/s', transferTime: '48.2 minutes', fuelEstimate: '0.16 kg', executionWindow: 'T-24h before TCA', burnDuration: '0.1 seconds' }, deltaVBudgetRemaining: 500, budgetAfterManoeuvre: '498.4', warning: null }));
 
 // Lifecycle status: designed -> launched -> operational -> decommissioned
 app.put('/api/spacecraft/:id/status', auth, async (req, res) => {
@@ -61,6 +61,42 @@ app.put('/api/spacecraft/:id/status', auth, async (req, res) => {
   } catch (e) {
     console.error('Status update error:', e.message);
     res.status(500).json({ error: e.message });
+  }
+});
+
+
+// ---- Real conjunction screening (CelesTrak GP data + SGP4) ----
+const conjunctionEngine = require('./utils/conjunction');
+const loadTwinAndFleet = async (req) => {
+  const uid = (req.user && (req.user.id || req.user.userId)) || req.userId;
+  const r = uid
+    ? await pool.query('SELECT id,name,type,config,user_id FROM spacecraft WHERE id=$1 AND user_id=$2 AND is_deleted=false', [req.params.id, uid])
+    : await pool.query('SELECT id,name,type,config,user_id FROM spacecraft WHERE id=$1 AND is_deleted=false', [req.params.id]);
+  if (!r.rows.length) return null;
+  const sc = r.rows[0];
+  const f = await pool.query('SELECT id,name,type,config FROM spacecraft WHERE user_id=$1 AND is_deleted=false', [sc.user_id]);
+  return { sc, fleet: f.rows };
+};
+app.get('/api/conjunction/:id/manoeuvre', auth, async (req, res) => {
+  try {
+    const t = await loadTwinAndFleet(req);
+    if (!t) return res.status(404).json({ error: 'Spacecraft not found' });
+    const report = await conjunctionEngine.screen(t.sc, t.fleet);
+    res.json(conjunctionEngine.planManoeuvre(t.sc, report));
+  } catch (e) {
+    console.error('Manoeuvre planning error:', e.message);
+    res.status(502).json({ error: e.message });
+  }
+});
+app.get('/api/conjunction/:id', auth, async (req, res) => {
+  try {
+    const t = await loadTwinAndFleet(req);
+    if (!t) return res.status(404).json({ error: 'Spacecraft not found' });
+    const report = await conjunctionEngine.screen(t.sc, t.fleet);
+    res.json(report);
+  } catch (e) {
+    console.error('Conjunction screening error:', e.message);
+    res.status(502).json({ error: e.message });
   }
 });
 

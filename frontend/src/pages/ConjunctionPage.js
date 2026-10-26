@@ -65,7 +65,7 @@ const ConjunctionPage = () => {
       console.error(err);
       setEvents(null);
       setManoeuvre(null);
-      setError('Conjunction analysis failed for this spacecraft. See backend logs for details.');
+      setError(err?.response?.data?.error || 'Conjunction screening failed. See backend logs for details.');
     }).finally(() => setLoading(false));
   }, [selectedSc]);
 
@@ -99,6 +99,16 @@ const ConjunctionPage = () => {
         </div>
       )}
 
+      {events?.screening && (
+        <div className="card" style={{ marginBottom: 16, fontSize: 12, color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '6px 22px' }}>
+          <span>📡 <strong style={{ color: 'var(--accent-primary)' }}>{Number(events.screening.catalogObjects).toLocaleString()}</strong> tracked objects (CelesTrak)</span>
+          <span><strong style={{ color: 'var(--accent-primary)' }}>{Number(events.screening.candidatesScreened).toLocaleString()}</strong> in ±30 km shell, propagated with SGP4</span>
+          <span>Window: next {events.screening.windowHours} h · alert radius {events.screening.reportThresholdKm} km</span>
+          <span>Data: {new Date(events.screening.catalogFetchedAt).toLocaleString()}{events.screening.catalogStale ? ' (STALE — CelesTrak unreachable)' : ''}</span>
+          <span style={{ color: 'var(--text-muted)', flexBasis: '100%' }}>Pc is an estimate from TLE accuracy, not an operational CDM. Confirm with Space-Track / EU SST before manoeuvring.</span>
+        </div>
+      )}
+
       {events && (
         <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 12, marginBottom: 24 }}>
           {[
@@ -125,7 +135,7 @@ const ConjunctionPage = () => {
         ))}
       </div>
 
-      {loading ? <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 60 }}>Analysing conjunction data...</div> : (
+      {loading ? <div style={{ color: 'var(--text-muted)', textAlign: 'center', padding: 60 }}>Screening against the live catalogue… the first run downloads CelesTrak data and can take up to a minute.</div> : (
         <>
           {tab === 'events' && events && (
             <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
@@ -143,7 +153,10 @@ const ConjunctionPage = () => {
                         <div style={{ fontWeight: 600, fontSize: 15, marginBottom: 4 }}>{ev.objectName}</div>
                         <div style={{ display: 'flex', gap: 8 }}>
                           <span className={`badge ${sevBadge[sev]}`}>{sev.toUpperCase()}</span>
-                          <span className="badge badge-satellite">{ev.objectId}</span>
+                          <span className="badge badge-satellite">{ev.source === 'ASTRA fleet' ? ev.objectId : `NORAD ${ev.objectId}`}</span>
+                          {ev.tleAgeDays != null && ev.source !== 'ASTRA fleet' && (
+                            <span style={{ fontSize: 10, color: 'var(--text-muted)', alignSelf: 'center' }}>TLE age {ev.tleAgeDays} d</span>
+                          )}
                         </div>
                       </div>
                       <div style={{ textAlign: 'right' }}>
@@ -188,7 +201,10 @@ const ConjunctionPage = () => {
               <div className="card">
                 <div className="section-title">🚀 Avoidance Manoeuvre</div>
                 <div style={{ marginBottom: 16 }}>
-                  <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>Hohmann Transfer (Collision Avoidance)</div>
+                  <div style={{ fontSize: 13, color: 'var(--text-secondary)', marginBottom: 8 }}>
+                    Hohmann transfer to avoid <strong style={{ color: 'var(--accent-amber)' }}>{manoeuvre.threat?.objectName}</strong>
+                    {manoeuvre.threat && <> (miss {manoeuvre.threat.missDistance} km, Pc {manoeuvre.threat.collisionProbability})</>}
+                  </div>
                   <div style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '12px 16px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
                     <div style={{ textAlign: 'center' }}>
                       <div style={{ fontFamily: 'var(--font-mono)', fontSize: 18, color: 'var(--accent-primary)' }}>{manoeuvre.currentAltitude} km</div>
@@ -220,7 +236,7 @@ const ConjunctionPage = () => {
                   </div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: 8 }}>
                     <span style={{ fontSize: 13, color: 'var(--text-secondary)' }}>After manoeuvre</span>
-                    <span style={{ fontFamily: 'var(--font-mono)', color: parseFloat(manoeuvre.budgetAfterManoeuvre) < 100 ? 'var(--accent-red)' : 'var(--accent-amber)' }}>{manoeuvre.budgetAfterManoeuvre} m/s</span>
+                    <span style={{ fontFamily: 'var(--font-mono)', color: parseFloat(manoeuvre.budgetAfterManoeuvre) < 30 ? 'var(--accent-red)' : 'var(--accent-amber)' }}>{manoeuvre.budgetAfterManoeuvre} m/s</span>
                   </div>
                   <div style={{ height: 8, background: 'var(--bg-secondary)', borderRadius: 4, overflow: 'hidden' }}>
                     <div style={{
@@ -237,11 +253,11 @@ const ConjunctionPage = () => {
                 <div style={{ marginTop: 16, padding: '12px 14px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
                   <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 6 }}>BURN SEQUENCE</div>
                   <div style={{ fontSize: 12, color: 'var(--text-secondary)', lineHeight: 1.8 }}>
-                    1. T-24h: Verify tracking data<br />
-                    2. T-6h: Upload manoeuvre parameters<br />
-                    3. TCA-24h: Execute Burn 1 ({manoeuvre.manoeuvre?.dv1})<br />
-                    4. T+{manoeuvre.manoeuvre?.transferTime}: Execute Burn 2 ({manoeuvre.manoeuvre?.dv2})<br />
-                    5. Verify new orbit, update TLE
+                    1. Request refined tracking / CDM for {manoeuvre.threat?.objectName}<br />
+                    2. Upload manoeuvre parameters to the spacecraft<br />
+                    3. {manoeuvre.manoeuvre?.burn1Time}: Burn 1, prograde ({manoeuvre.manoeuvre?.dv1})<br />
+                    4. {manoeuvre.manoeuvre?.burn2Time}: Burn 2, circularise ({manoeuvre.manoeuvre?.dv2})<br />
+                    5. Re-screen the new orbit before TCA ({manoeuvre.threat?.tcaTime ? new Date(manoeuvre.threat.tcaTime).toLocaleString() : '—'})
                   </div>
                 </div>
               </div>
