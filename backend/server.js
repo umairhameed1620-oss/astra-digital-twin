@@ -42,6 +42,28 @@ app.post('/api/ai/analyse', auth, (req, res) => res.json({ response: 'ARIA AI of
 app.post('/api/ai/briefing', auth, (req, res) => res.json({ briefing: 'ARIA offline.', timestamp: new Date().toISOString() }));
 app.get('/api/conjunction/:id', auth, (req, res) => res.json({ spacecraftId: req.params.id, totalEvents: 2, criticalCount: 0, warningCount: 1, events: [{ id: 'c1', objectName: 'COSMOS 2251 Debris', objectId: 'DEB-001', hoursToTCA: '18.5', missDistance: '0.842', relativeVelocity: '7.23', collisionProbability: '1.2e-4', severity: 'warning', tcaTime: new Date(Date.now()+66600000).toISOString(), recommendation: 'Monitor closely.' }, { id: 'c2', objectName: 'FENGYUN 1C Debris', objectId: 'DEB-042', hoursToTCA: '36.2', missDistance: '3.241', relativeVelocity: '5.87', collisionProbability: '8.4e-6', severity: 'nominal', tcaTime: new Date(Date.now()+130320000).toISOString(), recommendation: 'No action required.' }] }));
 app.get('/api/conjunction/:id/manoeuvre', auth, (req, res) => res.json({ currentAltitude: 550, recommendedAltitude: 552, manoeuvre: { type: 'Hohmann Transfer', dv1: '0.82 m/s', dv2: '0.81 m/s', totalDeltaV: '1.63 m/s', transferTime: '48.2 minutes', fuelEstimate: '0.16 kg', executionWindow: 'T-24h before TCA', burnDuration: '0.1 seconds' }, deltaVBudgetRemaining: 500, budgetAfterManoeuvre: '498.4', warning: null }));
+
+// Lifecycle status: designed -> launched -> operational -> decommissioned
+app.put('/api/spacecraft/:id/status', auth, async (req, res) => {
+  try {
+    const LIFECYCLE = ['designed', 'launched', 'operational', 'decommissioned'];
+    const status = req.body && req.body.status;
+    if (!LIFECYCLE.includes(status)) {
+      return res.status(400).json({ error: 'Invalid status. Use one of: ' + LIFECYCLE.join(', ') });
+    }
+    const uid = (req.user && (req.user.id || req.user.userId)) || req.userId;
+    const cols = 'id,name,type,description,status,config,created_at,updated_at';
+    const r = uid
+      ? await pool.query('UPDATE spacecraft SET status=$1, updated_at=NOW() WHERE id=$2 AND user_id=$3 AND is_deleted=false RETURNING ' + cols, [status, req.params.id, uid])
+      : await pool.query('UPDATE spacecraft SET status=$1, updated_at=NOW() WHERE id=$2 AND is_deleted=false RETURNING ' + cols, [status, req.params.id]);
+    if (!r.rows.length) return res.status(404).json({ error: 'Spacecraft not found' });
+    res.json(r.rows[0]);
+  } catch (e) {
+    console.error('Status update error:', e.message);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 app.get('/api/reports/:id', auth, async (req, res) => { try { const r = await pool.query('SELECT * FROM spacecraft WHERE id=$1', [req.params.id]); if (!r.rows.length) return res.status(404).json({ error: 'Not found' }); const s = r.rows[0]; res.setHeader('Content-Type', 'text/html'); res.send('<html><body style="font-family:monospace;background:#020408;color:#00d4ff;padding:40px"><h1>ASTRA Report</h1><h2>'+s.name+'</h2><p>Type: '+s.type+'</p></body></html>'); } catch(e) { res.status(500).json({ error: e.message }); } });
 app.get('/api/admin/stats', auth, async (req, res) => { try { const [u,s,m] = await Promise.all([pool.query('SELECT COUNT(*) as total FROM users'), pool.query('SELECT COUNT(*) as total FROM spacecraft WHERE is_deleted=false'), pool.query('SELECT COUNT(*) as total FROM missions')]); res.json({ users: u.rows[0], spacecraft: s.rows[0], missions: m.rows[0], faults: { total: 0, critical: 0 }, ai: { total: 0, tokens: 0 }, telemetry: { total: 0 } }); } catch(e) { res.status(500).json({ error: e.message }); } });
 app.get('/api/admin/users', auth, async (req, res) => { try { const r = await pool.query('SELECT id,name,email,organisation,role,is_active,last_login_at,created_at FROM users ORDER BY created_at DESC'); res.json({ data: r.rows, pagination: { total: r.rows.length } }); } catch(e) { res.status(500).json({ error: e.message }); } });

@@ -37,6 +37,7 @@ export const spacecraft = {
   getOne: (id) => API.get(`/spacecraft/${id}`),
   create: (data) => API.post('/spacecraft', data),
   update: (id, data) => API.put(`/spacecraft/${id}`, data),
+  setStatus: (id, status) => API.put(`/spacecraft/${id}/status`, { status }),
   delete: (id) => API.delete(`/spacecraft/${id}`),
 };
 

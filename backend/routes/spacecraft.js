@@ -10,6 +10,9 @@ const { NotFoundError } = require('../middleware/errorHandler');
 const config = require('../config');
 const router = express.Router();
 
+// Mission lifecycle a twin can move through
+const LIFECYCLE = ['designed', 'launched', 'operational', 'decommissioned'];
+
 router.use(authenticate);
 
 router.get('/', requirePermission('spacecraft:read'), validate(paginationSchema, 'query'), async (req, res) => {
@@ -57,6 +60,25 @@ router.get('/:id', requirePermission('spacecraft:read'), async (req, res) => {
   if (result.rows.length === 0) throw new NotFoundError('Spacecraft');
 
   await cache.set(cacheKey, result.rows[0], 300);
+  res.json(result.rows[0]);
+});
+
+// Change lifecycle status only (designed -> launched -> operational -> decommissioned)
+router.put('/:id/status', requirePermission('spacecraft:update'), async (req, res) => {
+  const status = req.body && req.body.status;
+  if (!LIFECYCLE.includes(status)) {
+    return res.status(400).json({ error: `Invalid status. Use one of: ${LIFECYCLE.join(', ')}` });
+  }
+
+  const result = await query(
+    'UPDATE spacecraft SET status=$1,updated_at=NOW() WHERE id=$2 AND user_id=$3 AND is_deleted=false RETURNING id,name,type,description,status,config,created_at,updated_at',
+    [status, req.params.id, req.user.id]
+  );
+  if (result.rows.length === 0) throw new NotFoundError('Spacecraft');
+
+  await cache.del(`spacecraft:${req.params.id}`);
+  await cache.delPattern(`spacecraft:user:${req.user.id}:*`);
+  await auditLog(req.user.id, 'spacecraft_status_changed', 'spacecraft', req.params.id, { status, ip: req.ip });
   res.json(result.rows[0]);
 });
 
