@@ -1,7 +1,6 @@
 // Alert delivery: email (SMTP) and Slack incoming webhooks. Every attempt is recorded in `alerts`.
 const nodemailer = require('nodemailer');
 const { request } = require('./net');
-const telegram = require('./telegram');
 const { query } = require('./db');
 const log = require('./log');
 
@@ -74,17 +73,6 @@ const deliver = async ({ userId, scId, eventId, severity, title, message, settin
       log.warn('Slack alert failed', { error: e.message });
       await record(userId, scId, eventId, 'slack', severity, title, message, 'failed', e.message);
       results.push({ channel: 'slack', status: 'failed', error: e.message });
-    }
-  }
-  if (settings && settings.telegram_enabled && settings.telegram_chat_id) {
-    try {
-      await telegram.send(settings.telegram_chat_id, title, message, severity);
-      await record(userId, scId, eventId, 'telegram', severity, title, message, 'sent');
-      results.push({ channel: 'telegram', status: 'sent' });
-    } catch (e) {
-      log.warn('Telegram alert failed', { error: e.message });
-      await record(userId, scId, eventId, 'telegram', severity, title, message, 'failed', e.message);
-      results.push({ channel: 'telegram', status: 'failed', error: e.message });
     }
   }
   return results;

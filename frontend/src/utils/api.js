@@ -75,9 +75,6 @@ export const alerts = {
   getSettings: () => API.get('/alerts/settings'),
   saveSettings: (data) => API.put('/alerts/settings', data),
   test: () => API.post('/alerts/test'),
-  telegramLink: () => API.post('/alerts/telegram/link'),
-  telegramCheck: () => API.post('/alerts/telegram/check'),
-  telegramUnlink: () => API.delete('/alerts/telegram'),
 };
 
 export const simulation = {
