@@ -57,6 +57,7 @@ const persistScreening = async (sc, events) => {
 
 // One alert per object per run: repeated passes of the same object are summarised in a single message.
 const alertFor = async (sc, escalated) => {
+  if (sc.alerts_muted) return 0; // twin tracked for validation only
   const settings = await getSettings(sc.user_id);
   const min = RANK[(settings && settings.min_severity) || 'warning'];
   const groups = new Map();

@@ -45,6 +45,8 @@ export const spacecraft = {
   update: (id, data) => API.put(`/spacecraft/${id}`, data),
   setStatus: (id, status) => API.put(`/spacecraft/${id}/status`, { status }),
   linkOrbit: (id, body) => API.put(`/spacecraft/${id}/orbit`, body),
+  bulkNorad: (noradIds, opts = {}) => API.post('/spacecraft/bulk-norad', { noradIds, ...opts }),
+  setAlertsMuted: (id, muted) => API.put(`/spacecraft/${id}/alerts`, { muted }),
   screenNow: (id) => API.post(`/spacecraft/${id}/screen`),
   uploadCdm: (id, content) => API.post(`/spacecraft/${id}/cdm`, { content }),
   cdms: (id) => API.get(`/spacecraft/${id}/cdms`),
@@ -75,6 +77,15 @@ export const alerts = {
   getSettings: () => API.get('/alerts/settings'),
   saveSettings: (data) => API.put('/alerts/settings', data),
   test: () => API.post('/alerts/test'),
+};
+
+export const validation = {
+  run: (spacecraftIds) => API.post('/validation/run', spacecraftIds ? { spacecraftIds } : {}),
+  list: () => API.get('/validation'),
+  summary: () => API.get('/validation/summary'),
+  get: (id) => API.get(`/validation/${id}`),
+  csv: (id) => API.get(`/validation/${id}/export.csv`, { responseType: 'blob' }),
+  pdf: (id) => API.get(`/validation/${id}/report.pdf`, { responseType: 'blob' }),
 };
 
 export const simulation = {

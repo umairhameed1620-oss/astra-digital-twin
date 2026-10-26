@@ -9,12 +9,15 @@ const spacetrack = require('./spacetrack');
 const CDM = require('./cdm');
 const metrics = require('./metrics');
 const T = require('./tle');
+const validation = require('./validation');
 
+const VALIDATION_HOUR = Number(process.env.VALIDATION_HOUR_UTC ?? 6);
 const SPACETRACK_EVERY_MS = (Number(process.env.SPACETRACK_POLL_HOURS) || 8) * 3600 * 1000;
 
 let running = false;
 let lastSpaceTrack = 0;
-const status = { lastTickAt: null, lastScreenings: 0, lastError: null, lastSpaceTrackAt: null, lastSpaceTrackError: null };
+let lastValidationDay = null;
+const status = { lastTickAt: null, lastScreenings: 0, lastError: null, lastSpaceTrackAt: null, lastSpaceTrackError: null, lastValidationAt: null, lastValidationError: null };
 
 const fleetOf = async (userId) => (await query(
   'SELECT id, name, type, config, user_id, norad_id, tle_line1, tle_line2 FROM spacecraft WHERE user_id=$1 AND is_deleted=false', [userId]
@@ -85,6 +88,30 @@ const pollSpaceTrack = async () => {
   }
 };
 
+// Once a day, compare ASTRA with the CDMs of every user who has NORAD-linked twins with CDMs.
+const dailyValidation = async () => {
+  if (process.env.VALIDATION_DAILY === 'false') return;
+  const now = new Date();
+  const day = now.toISOString().slice(0, 10);
+  if (lastValidationDay === day || now.getUTCHours() < VALIDATION_HOUR) return;
+  lastValidationDay = day;
+  const users = (await query(
+    `SELECT DISTINCT s.user_id FROM spacecraft s JOIN cdms c ON c.spacecraft_id = s.id
+      WHERE s.is_deleted=false AND s.norad_id IS NOT NULL AND c.tca > NOW() - INTERVAL '14 days'`
+  )).rows;
+  for (const u of users) {
+    const done = (await query(
+      "SELECT 1 FROM validation_runs WHERE user_id=$1 AND trigger='scheduled' AND created_at::date = CURRENT_DATE", [u.user_id]
+    )).rows.length;
+    if (done) continue;
+    try { await validation.run(u.user_id, { trigger: 'scheduled' }); } catch (e) {
+      status.lastValidationError = e.message;
+      log.warn('Daily validation failed', { user: u.user_id, error: e.message });
+    }
+  }
+  status.lastValidationAt = new Date().toISOString();
+};
+
 const tick = async () => {
   if (running) return;
   running = true;
@@ -93,6 +120,7 @@ const tick = async () => {
     await refreshTles();
     status.lastScreenings = await screenDue();
     await pollSpaceTrack();
+    await dailyValidation();
     status.lastError = null;
   } catch (e) {
     status.lastError = e.message;
@@ -113,4 +141,4 @@ const start = () => {
   log.info('Scheduler started', { checkEveryMin: 15, spaceTrackEveryHours: SPACETRACK_EVERY_MS / 3600000, spaceTrack: spacetrack.configured() });
 };
 
-module.exports = { start, tick, status, refreshTles, fleetOf };
+module.exports = { start, tick, status, refreshTles, fleetOf, dailyValidation };

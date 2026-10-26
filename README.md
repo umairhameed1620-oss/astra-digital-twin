@@ -28,10 +28,16 @@ Built by Umair Hameed / FC Technologies.
 - The best candidates are **re-screened against the whole catalogue** so the recommended burn does not create a new conjunction.
 - One-click **PDF conjunction assessment report** with the events, CDMs, options, recommendation and a review/sign-off block.
 
+**Prove it against official data**
+- The **Validation** page compares ASTRA's own prediction with every CDM issued for your tracked satellites: difference in time of closest approach, miss distance, Pc and severity, per event and in total.
+- Runs automatically every day; each run downloads as CSV or a PDF validation report.
+- Add up to 25 real satellites at once by NORAD ID, or a starter set of 20 well-known LEO satellites, with alerts off so they are tracked quietly.
+
 **Operate it like a product**
 - Roles (admin / engineer / viewer), per-user data isolation, audit trail, rate limiting, input validation.
 - Mission lifecycle (planning → active → completed), spacecraft lifecycle (designed → launched → operational → decommissioned).
 - Docker Compose deployment with automatic HTTPS (Caddy), nightly database backups, health check, Prometheus/Grafana.
+- One-command server install: `scripts/deploy-vps.sh` (Docker, firewall, secrets, HTTPS; works without a domain).
 
 See [SECURITY.md](SECURITY.md) for the security model and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for hosting, backups and monitoring.
 
@@ -63,7 +69,7 @@ Register with an email listed in `ADMIN_EMAILS` to get an admin account.
 ```bash
 cd backend && npm ci && npm run test:unit
 ```
-The unit tests cover the Foster Pc implementation (checked against closed-form results), TLE validation, CDM parsing, and manoeuvre physics.
+The unit tests cover the Foster Pc implementation (checked against closed-form results), TLE validation, CDM parsing, manoeuvre physics, and the CDM validation statistics.
 
 ---
 

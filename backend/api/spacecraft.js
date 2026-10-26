@@ -148,6 +148,54 @@ router.put('/:id/orbit', canWrite, handle(async (req, res) => {
   res.json({ ...r.rows[0], orbit: { ...el, catalogName: tle.name } });
 }));
 
+// Add several real satellites at once by NORAD ID (e.g. a validation set). Skips IDs already in the fleet.
+router.post('/bulk-norad', canWrite, handle(async (req, res) => {
+  const b = parse(z.object({
+    noradIds: z.array(z.coerce.number().int().positive().max(999999999)).min(1).max(25),
+    status: z.enum(['designed', 'launched', 'operational']).default('operational'),
+    muteAlerts: z.boolean().default(true),
+  }), req.body);
+  const ids = [...new Set(b.noradIds)];
+  const existing = new Set((await query(
+    'SELECT norad_id FROM spacecraft WHERE user_id=$1 AND is_deleted=false AND norad_id IS NOT NULL', [req.user.id]
+  )).rows.map((r) => Number(r.norad_id)));
+  const count = (await query('SELECT COUNT(*)::int AS n FROM spacecraft WHERE user_id=$1 AND is_deleted=false', [req.user.id])).rows[0].n;
+  try { await conj.loadCatalog(); } catch (e) { /* fall back to per-object CelesTrak lookups */ }
+
+  const results = [];
+  let room = MAX_PER_USER - count;
+  for (const norad of ids) {
+    if (existing.has(norad)) { results.push({ norad, status: 'exists' }); continue; }
+    if (room <= 0) { results.push({ norad, status: 'error', error: `Maximum ${MAX_PER_USER} spacecraft per account` }); continue; }
+    let tle;
+    try { tle = await T.byNorad(norad, conj.findInCatalog); } catch (e) { results.push({ norad, status: 'error', error: e.message }); continue; }
+    const el = O.describe({ kind: 'tle', l1: tle.l1, l2: tle.l2 });
+    const name = String(tle.name && !/^NORAD /.test(tle.name) ? tle.name : `NORAD ${norad}`).slice(0, 150);
+    const cfg = { altitude: Number(el.altitudeKm.toFixed(1)), inclination: Number(el.inclinationDeg.toFixed(3)), raan: Number(el.raanDeg.toFixed(3)) };
+    const r = await query(
+      `INSERT INTO spacecraft (id,user_id,name,type,description,components,config,status,is_deleted,created_at,
+         norad_id,tle_line1,tle_line2,tle_epoch,tle_source,tle_updated_at,alerts_muted)
+       VALUES ($1,$2,$3,'satellite',$4,'[]',$5,$6,false,NOW(),$7,$8,$9,$10,$11,NOW(),$12) RETURNING id, name, norad_id`,
+      [uuidv4(), req.user.id, name, 'Added by NORAD ID for tracking and validation', JSON.stringify(cfg), b.status,
+        tle.norad, tle.l1, tle.l2, tle.epoch, tle.source, b.muteAlerts]
+    );
+    room--;
+    existing.add(norad);
+    results.push({ norad, status: 'added', id: r.rows[0].id, name: r.rows[0].name, altitudeKm: cfg.altitude });
+  }
+  await audit(req, 'spacecraft_bulk_added', 'spacecraft', null, { added: results.filter((r) => r.status === 'added').length });
+  res.status(201).json({ results });
+}));
+
+// Turn conjunction alerts on or off for one twin (it is still screened either way).
+router.put('/:id/alerts', canWrite, handle(async (req, res) => {
+  const { muted } = parse(z.object({ muted: z.boolean() }), req.body);
+  const sc = await getOwned(req.params.id, req.user.id);
+  const r = await query('UPDATE spacecraft SET alerts_muted=$1, updated_at=NOW() WHERE id=$2 RETURNING *', [muted, sc.id]);
+  await audit(req, muted ? 'alerts_muted' : 'alerts_unmuted', 'spacecraft', sc.id, {});
+  res.json(r.rows[0]);
+}));
+
 // Run a screening now, store events and send alerts for new/escalated risks.
 router.post('/:id/screen', canWrite, handle(async (req, res) => {
   const sc = await getOwned(req.params.id, req.user.id);

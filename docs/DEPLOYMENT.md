@@ -12,6 +12,20 @@ The database schema is created and upgraded automatically when the backend start
 
 ## 2. Public server with HTTPS
 
+### Quick install (recommended)
+
+On a fresh Ubuntu 22.04/24.04 server (2 vCPU / 4 GB RAM, e.g. Hetzner CX22), log in as root and run:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/umairhameed1620-oss/astra-digital-twin/main/scripts/deploy-vps.sh | bash
+```
+
+The script installs Docker, opens only ports 22/80/443, clones ASTRA to `/opt/astra`, creates `.env` with random secrets, asks for your admin email (and optionally a Gmail app password and Space-Track login), and starts the stack with automatic HTTPS. Without a domain it uses `<server-ip>.sslip.io`, which resolves to the server and gets a normal Let's Encrypt certificate. Update later with `bash /opt/astra/scripts/update.sh`.
+
+If the repository is private, first run `export ASTRA_REPO=https://<github-token>@github.com/umairhameed1620-oss/astra-digital-twin.git` (a fine-grained token with read access to this repository), then download and run the script.
+
+### Manual install
+
 Requirements: a Linux VPS with 2 vCPU / 4 GB RAM (Hetzner CX22, DigitalOcean, AWS Lightsail), Docker with Compose v2.24 or newer, and a domain name.
 
 1. Point a DNS **A record** for your domain (e.g. `astra.example.com`) at the server's IP.
@@ -49,7 +63,13 @@ Create a free account at space-track.org, set `SPACETRACK_USER` and `SPACETRACK_
 
 Read and follow the Space-Track user agreement. In particular, do not redistribute Space-Track data outside the operators entitled to it.
 
-## 5. Backups and restore
+## 5. Validation against CDMs
+
+The **Validation** page compares ASTRA's own prediction with every CDM stored for a NORAD-linked twin (Space-Track public CDMs and uploaded CDMs from the last `VALIDATION_LOOKBACK_DAYS`, default 14). For each CDM ASTRA propagates both objects from the latest public TLEs, finds its own TCA within ±45 minutes of the CDM's TCA and records the differences in TCA, miss distance, Pc and severity. A run happens automatically once a day after `VALIDATION_HOUR_UTC` (default 06) and can be started by hand; every run can be downloaded as CSV or PDF.
+
+Use **Add starter set** to track 20 well-known LEO satellites. They are added as Operational with alerts off, so they are screened and validated without sending alerts.
+
+## 6. Backups and restore
 
 The `backup` service writes a compressed dump to `./backups` every night at `BACKUP_HOUR_UTC` and keeps `BACKUP_KEEP_DAYS` days.
 
@@ -66,14 +86,14 @@ docker compose start backend
 ```
 Test a restore on a spare machine at least once a quarter.
 
-## 6. Monitoring
+## 7. Monitoring
 
 - **Uptime:** add an HTTPS monitor for `https://<your-domain>/api/health` in UptimeRobot, Better Stack or similar (alerts you if the site or database is down).
 - **Metrics:** Prometheus scrapes the backend. Grafana runs on `127.0.0.1:3001`; reach it through an SSH tunnel: `ssh -L 3001:localhost:3001 user@server`, then open http://localhost:3001.
 - **Logs:** `docker compose logs -f backend` (JSON lines in production).
 - **Scheduler status:** the Alerts page shows the last automatic check and any error.
 
-## 7. Configuration reference
+## 8. Configuration reference
 
 All settings are in `.env.example`, with comments. The most important are:
 
@@ -88,3 +108,4 @@ All settings are in `.env.example`, with comments. The most important are:
 | `PC_CRITICAL`, `PC_WARNING` | Severity thresholds (defaults 1e-4 / 1e-6) |
 | `PC_HBR_M` | Combined hard-body radius in metres (default 15) |
 | `CONJ_WINDOW_HOURS`, `CONJ_REPORT_KM` | Screening window and alert radius |
+| `VALIDATION_DAILY`, `VALIDATION_HOUR_UTC`, `VALIDATION_LOOKBACK_DAYS` | Daily validation run (default on, 06 UTC, 14 days) |

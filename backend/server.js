@@ -14,7 +14,7 @@ const scheduler = require('./lib/scheduler');
 const metrics = require('./lib/metrics');
 const { SimulationEngine } = require('./utils/simulationEngine');
 
-const VERSION = '2.1.0';
+const VERSION = '2.2.0';
 const PORT = Number(process.env.PORT) || 5001;
 
 const app = express();
@@ -31,6 +31,7 @@ app.use('/api/spacecraft', require('./api/spacecraft').router);
 app.use('/api/conjunction', require('./api/conjunction'));
 app.use('/api/missions', require('./api/missions'));
 app.use('/api/alerts', require('./api/alerts'));
+app.use('/api/validation', require('./api/validation'));
 app.use('/api/admin', require('./api/admin'));
 app.use('/api', require('./api/misc'));
 
