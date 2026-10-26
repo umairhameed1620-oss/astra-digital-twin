@@ -40,6 +40,7 @@ cd /opt/astra && git pull && docker compose -f docker-compose.yml -f docker-comp
 
 - **Email:** set `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS` and `SMTP_FROM` in `.env` (any SMTP provider works). Restart the backend, then use **Alerts → Send test alert**.
 - **Slack:** each user pastes a Slack *incoming webhook* URL on the Alerts page. No server configuration is needed.
+- **Telegram (free, to your phone):** in Telegram, message **@BotFather**, send `/newbot`, choose a name and a username ending in `bot`, and copy the token into `TELEGRAM_BOT_TOKEN` in `.env`. Restart the backend. Each user then clicks **Connect Telegram** on the Alerts page and presses **START** in the bot chat. No chat IDs are needed.
 
 Twins are screened automatically while their status is **Launched** or **Operational**, at the interval each user sets (default 6 hours). An alert is sent when an event is new or its severity increases.
 
