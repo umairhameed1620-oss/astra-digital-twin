@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import OrbitalVisualiser from '../components/visualiser/OrbitalVisualiser';
-import { spacecraft as scApi } from '../utils/api';
+import { spacecraft as scApi, tle as tleApi, errorText } from '../utils/api';
 
 const LIFECYCLE = [
   { key: 'designed', label: 'Designed', color: 'var(--text-muted)' },
@@ -18,6 +18,118 @@ const hash = (s) => {
   let x = 0;
   for (const c of String(s)) x = (x * 31 + c.charCodeAt(0)) | 0;
   return Math.abs(x);
+};
+
+const tleField = (l2, a, b) => (l2 ? l2.slice(a, b).trim() : '');
+const ageDays = (epoch) => (epoch ? (Date.now() - new Date(epoch).getTime()) / 86400000 : null);
+
+// Link a twin to a real satellite (NORAD ID, live CelesTrak data) or paste an operator TLE.
+const OrbitDataCard = ({ sc, onUpdated }) => {
+  const [mode, setMode] = useState('norad');
+  const [norad, setNorad] = useState('');
+  const [preview, setPreview] = useState(null);
+  const [l1, setL1] = useState('');
+  const [l2, setL2] = useState('');
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState('');
+  const linked = !!sc.tle_line1;
+  const age = ageDays(sc.tle_epoch);
+
+  useEffect(() => { setPreview(null); setErr(''); setNorad(''); setL1(''); setL2(''); }, [sc.id]);
+
+  const lookup = async () => {
+    setBusy(true); setErr(''); setPreview(null);
+    try { setPreview((await tleApi.lookup(norad.trim())).data); }
+    catch (e) { setErr(errorText(e, 'Lookup failed')); }
+    finally { setBusy(false); }
+  };
+  const save = async (body) => {
+    setBusy(true); setErr('');
+    try {
+      const res = await scApi.linkOrbit(sc.id, body);
+      onUpdated(res.data);
+      setPreview(null); setNorad(''); setL1(''); setL2('');
+    } catch (e) { setErr(errorText(e, 'Could not update orbit')); }
+    finally { setBusy(false); }
+  };
+  const pasteBlock = (text) => {
+    const lines = text.split(/\r?\n/).map((x) => x.trimEnd()).filter(Boolean);
+    const i = lines.findIndex((x) => x.startsWith('1 '));
+    if (i >= 0 && lines[i + 1]) { setL1(lines[i]); setL2(lines[i + 1]); return true; }
+    return false;
+  };
+
+  const small = { fontSize: 11, color: 'var(--text-muted)' };
+  const row = (k, v, colour) => (
+    <div key={k} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0' }}>
+      <span style={{ fontSize: 12, color: 'var(--text-muted)' }}>{k}</span>
+      <span style={{ fontFamily: 'var(--font-mono)', fontSize: 12, color: colour || 'var(--accent-primary)' }}>{v}</span>
+    </div>
+  );
+
+  return (
+    <div className="card">
+      <div className="section-title">Orbit Data</div>
+      {linked ? (
+        <>
+          {row('Source', sc.tle_source === 'celestrak' ? 'CelesTrak (auto-refresh)' : 'Operator TLE')}
+          {sc.norad_id && row('NORAD ID', sc.norad_id)}
+          {row('TLE epoch', sc.tle_epoch ? new Date(sc.tle_epoch).toISOString().replace('T', ' ').slice(0, 16) + ' UTC' : '—')}
+          {age != null && row('TLE age', `${age.toFixed(1)} days`, age > 7 ? 'var(--accent-red)' : age > 3 ? 'var(--accent-amber)' : 'var(--accent-green)')}
+          {age != null && age > 7 && <div style={{ ...small, color: 'var(--accent-amber)', margin: '4px 0' }}>Old element set: screening accuracy is reduced.</div>}
+          <button className="btn btn-secondary" style={{ width: '100%', justifyContent: 'center', fontSize: 12, marginTop: 10 }} disabled={busy}
+            onClick={() => window.confirm(`Unlink ${sc.name} from its real orbit and go back to the design orbit?`) && save({ source: 'none' })}>
+            Unlink real orbit
+          </button>
+        </>
+      ) : (
+        <>
+          <div style={{ ...small, marginBottom: 10 }}>This twin flies an idealised design orbit. Link it to a real satellite for SGP4 tracking and screening.</div>
+          <div style={{ display: 'flex', gap: 6, marginBottom: 10 }}>
+            {[['norad', 'NORAD ID'], ['tle', 'Paste TLE']].map(([k, l]) => (
+              <button key={k} className="btn" onClick={() => { setMode(k); setErr(''); }} style={{
+                flex: 1, justifyContent: 'center', padding: '6px 8px', fontSize: 11,
+                background: mode === k ? 'var(--accent-primary)' : 'transparent', color: mode === k ? 'var(--bg-primary)' : 'var(--text-secondary)', border: '1px solid var(--border)',
+              }}>{l}</button>
+            ))}
+          </div>
+          {mode === 'norad' ? (
+            <>
+              <div style={{ display: 'flex', gap: 6 }}>
+                <input value={norad} onChange={(e) => setNorad(e.target.value.replace(/[^0-9]/g, ''))} placeholder="e.g. 25544 (ISS)" style={{ fontSize: 12, padding: '8px 10px' }}
+                  onKeyDown={(e) => e.key === 'Enter' && norad && lookup()} />
+                <button className="btn btn-secondary" style={{ fontSize: 12, padding: '8px 12px' }} disabled={!norad || busy} onClick={lookup}>{busy && !preview ? '…' : 'Find'}</button>
+              </div>
+              {preview && (
+                <div style={{ marginTop: 10, padding: 10, background: 'var(--bg-secondary)', borderRadius: 6 }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, marginBottom: 4 }}>{preview.name}</div>
+                  {row('Perigee / apogee', `${preview.perigeeKm} / ${preview.apogeeKm} km`)}
+                  {row('Inclination', `${preview.inclinationDeg}°`)}
+                  {row('Period', `${preview.periodMin} min`)}
+                  {row('TLE age', `${preview.ageDays} d`)}
+                  <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', fontSize: 12, marginTop: 8 }} disabled={busy}
+                    onClick={() => save({ source: 'celestrak', noradId: preview.noradId })}>
+                    Link {sc.name} to NORAD {preview.noradId}
+                  </button>
+                </div>
+              )}
+            </>
+          ) : (
+            <>
+              <textarea rows={3} value={l1 && l2 ? `${l1}\n${l2}` : l1} placeholder={'Paste both TLE lines\n1 25544U 98067A ...\n2 25544  51.64 ...'}
+                onChange={(e) => { if (!pasteBlock(e.target.value)) { setL1(e.target.value); setL2(''); } }}
+                style={{ fontFamily: 'var(--font-mono)', fontSize: 10, padding: 8, whiteSpace: 'pre', overflowX: 'auto' }} />
+              <button className="btn btn-primary" style={{ width: '100%', justifyContent: 'center', fontSize: 12, marginTop: 8 }} disabled={!l1 || !l2 || busy}
+                onClick={() => save({ source: 'manual', line1: l1, line2: l2 })}>
+                Use this TLE
+              </button>
+            </>
+          )}
+        </>
+      )}
+      {err && <div style={{ marginTop: 8, fontSize: 12, color: 'var(--accent-red)' }}>{err}</div>}
+    </div>
+  );
 };
 
 const VisualisePage = () => {
@@ -60,8 +172,8 @@ const VisualisePage = () => {
   const inclination = cfg.inclination != null ? Number(cfg.inclination) : null;
   const deltaV = cfg.deltaV ?? cfg.deltaVBudget ?? cfg.dv;
   const raan = selected ? (cfg.raan != null ? Number(cfg.raan) : hash(selected.id) % 360) : 0;
-  const period = altitude ? Math.round(2 * Math.PI * Math.sqrt(Math.pow((6371 + altitude) * 1000, 3) / 3.986004418e14) / 60) : null;
-  const velocity = altitude ? Math.sqrt(398600.4418 / (6371 + altitude)).toFixed(3) : null;
+  const period = altitude ? Math.round(2 * Math.PI * Math.sqrt(Math.pow((6378.137 + altitude) * 1000, 3) / 3.986004418e14) / 60) : null;
+  const velocity = altitude ? Math.sqrt(398600.4418 / (6378.137 + altitude)).toFixed(3) : null;
 
   const lifeIdx = selected ? LIFECYCLE.findIndex(s => s.key === selected.status) : -1;
   const next = lifeIdx >= 0 && lifeIdx < LIFECYCLE.length - 1 ? LIFECYCLE[lifeIdx + 1] : null;
@@ -197,16 +309,27 @@ const VisualisePage = () => {
                 )}
               </div>
 
+              {['satellite', 'station'].includes(selected.type) && (
+                <OrbitDataCard sc={selected} onUpdated={(u) => setSpacecraft((list) => list.map((s) => (String(s.id) === String(u.id) ? { ...s, ...u } : s)))} />
+              )}
+
               {/* Orbital elements */}
               <div className="card">
                 <div className="section-title">Orbital Elements</div>
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
-                  {[
-                    ['Semi-major axis', altitude ? `${(6371 + altitude).toFixed(0)} km` : 'N/A'],
+                  {(selected.tle_line2 ? [
+                    ['Semi-major axis', altitude ? `${(6378.137 + altitude).toFixed(1)} km` : 'N/A'],
+                    ['Eccentricity', `0.${tleField(selected.tle_line2, 26, 33)}`],
+                    ['Inclination', `${Number(tleField(selected.tle_line2, 8, 16)).toFixed(4)}°`],
+                    ['RAAN', `${Number(tleField(selected.tle_line2, 17, 25)).toFixed(4)}°`],
+                    ['Arg. of perigee', `${Number(tleField(selected.tle_line2, 34, 42)).toFixed(4)}°`],
+                    ['Mean motion', `${Number(tleField(selected.tle_line2, 52, 63)).toFixed(6)} rev/day`],
+                  ] : [
+                    ['Semi-major axis', altitude ? `${(6378.137 + altitude).toFixed(0)} km` : 'N/A'],
                     ['Eccentricity', '0.0000 (circular)'],
                     ['Inclination', inclination != null ? `${inclination.toFixed(2)}°` : 'N/A'],
                     ['RAAN', `${raan.toFixed(1)}°`],
-                  ].map(([label, value]) => (
+                  ]).map(([label, value]) => (
                     <div key={label} style={{ display: 'flex', justifyContent: 'space-between', padding: '6px 0', borderBottom: '1px solid var(--border)' }}>
                       <span style={{ fontSize: 11, color: 'var(--text-muted)' }}>{label}</span>
                       <span style={{ fontFamily: 'var(--font-mono)', fontSize: 11, color: 'var(--text-secondary)' }}>{value}</span>

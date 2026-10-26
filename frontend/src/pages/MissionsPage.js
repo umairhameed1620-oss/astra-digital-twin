@@ -119,6 +119,27 @@ const MissionsPage = () => {
   };
 
   const statusColor = { planning: 'warning', active: 'nominal', completed: 'satellite', aborted: 'critical' };
+  const ACTIONS = {
+    planning: [['active', 'Start mission →', 'btn-primary'], ['aborted', 'Abort', 'btn-danger']],
+    active: [['completed', 'Mark completed ✓', 'btn-primary'], ['planning', 'Back to planning', 'btn-secondary'], ['aborted', 'Abort', 'btn-danger']],
+    completed: [['active', 'Reopen', 'btn-secondary']],
+    aborted: [['planning', 'Re-plan', 'btn-secondary']],
+  };
+  const [statusBusy, setStatusBusy] = useState(null);
+
+  const changeStatus = async (m, status) => {
+    if (status === 'aborted' && !window.confirm(`Abort mission ${m.name}?`)) return;
+    setStatusBusy(m.id); setError('');
+    try {
+      const res = await mApi.setStatus(m.id, status);
+      setMissions((list) => list.map((x) => (x.id === m.id ? { ...x, ...res.data } : x)));
+    } catch (err) {
+      setError(err?.response?.data?.error || 'Could not change mission status.');
+    } finally {
+      setStatusBusy(null);
+    }
+  };
+  const fmtDate = (d) => (d ? new Date(d).toLocaleDateString() : null);
 
   return (
     <div className="animate-in">
@@ -201,7 +222,16 @@ const MissionsPage = () => {
                   <div style={{ fontSize: 12, color: 'var(--text-muted)' }}>
                     Spacecraft: <span style={{ color: name ? 'var(--accent-primary)' : 'var(--text-secondary)' }}>{name || 'None assigned'}</span>
                     {' · '}Created: <span style={{ color: 'var(--text-secondary)' }}>{m.created_at ? new Date(m.created_at).toLocaleDateString() : '—'}</span>
+                    {m.started_at && <>{' · '}Started: <span style={{ color: 'var(--text-secondary)' }}>{fmtDate(m.started_at)}</span></>}
+                    {m.completed_at && <>{' · '}{status === 'aborted' ? 'Aborted' : 'Completed'}: <span style={{ color: 'var(--text-secondary)' }}>{fmtDate(m.completed_at)}</span></>}
                   </div>
+                  {m.id && (
+                    <div style={{ display: 'flex', gap: 8, marginTop: 12 }} onClick={(e) => e.stopPropagation()}>
+                      {(ACTIONS[status] || []).map(([to, label, cls]) => (
+                        <button key={to} className={`btn ${cls}`} style={{ fontSize: 12, padding: '6px 12px' }} disabled={statusBusy === m.id} onClick={() => changeStatus(m, to)}>{label}</button>
+                      ))}
+                    </div>
+                  )}
                   {isOpen && objectives.length > 0 && (
                     <div style={{ marginTop: 14, padding: '12px 14px', background: 'var(--bg-secondary)', borderRadius: 8 }}>
                       <div style={{ fontSize: 11, color: 'var(--text-muted)', marginBottom: 8, letterSpacing: 1 }}>OBJECTIVES</div>

@@ -38,3 +38,6 @@ Thumbs.db
 *.key
 *.cert
 secrets/
+
+# Database backups
+backups/

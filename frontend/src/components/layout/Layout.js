@@ -7,6 +7,7 @@ const getNav = (role) => [
   { path: '/visualise', label: '3D Visualiser', icon: '🌍' },
   { path: '/conjunction', label: 'Conjunction', icon: '⚠️' },
   { path: '/missions', label: 'Mission Control', icon: '🎯' },
+  { path: '/alerts', label: 'Alerts', icon: '🔔' },
   { path: '/ai', label: 'ARIA AI', icon: '🤖' },
   { path: '/analytics', label: 'Analytics', icon: '📊' },
   ...(role === 'admin' ? [{ path: '/admin', label: 'Admin', icon: '🔐' }] : []),

@@ -1,132 +1,60 @@
-// ASTRA real conjunction screening
-// Catalogue: CelesTrak GP data (TLE).  Propagation: SGP4 (satellite.js) in a worker thread.
-// The twin itself is modelled as the same circular orbit the 3D visualiser draws.
-const https = require('https');
+// ASTRA conjunction screening.
+// Catalogue: CelesTrak GP data (TLE). Propagation: SGP4 (satellite.js) in a worker thread.
+// Twins linked to a real satellite (NORAD ID / TLE) are propagated with SGP4; unlinked twins use
+// the idealised circular orbit from their design config (same model the 3D visualiser draws).
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { Worker } = require('worker_threads');
+const O = require('../lib/orbit');
+const PC = require('../lib/pc');
+const { parseTle } = require('../lib/tle');
+const { getText } = require('../lib/net');
 
 const GROUPS = [
-  'active',              // all active payloads (incl. Starlink, OneWeb, ISS...)
+  'active',              // all active payloads (Starlink, OneWeb, ISS ...)
   'cosmos-1408-debris',  // 2021 Russian ASAT test debris
   'fengyun-1c-debris',   // 2007 Chinese ASAT test debris
   'iridium-33-debris',   // 2009 Iridium-Cosmos collision
   'cosmos-2251-debris',
 ];
 
-const MU = 398600.4418;          // km^3/s^2
-const RE = 6378.137;             // km, equatorial radius (altitudes are measured from this)
-const DEG = Math.PI / 180;
-const EPOCH = Date.UTC(2026, 0, 1);
-const HBR_KM = 0.015;            // combined hard-body radius (15 m)
-const CATALOG_TTL_MS = 6 * 3600 * 1000;   // CelesTrak asks users not to re-download more often than every few hours
+const CATALOG_TTL_MS = 6 * 3600 * 1000;   // CelesTrak asks users not to re-download more than every couple of hours
 const RESULT_TTL_MS = 30 * 60 * 1000;
 const SHELL_PAD_KM = 30;
-const REPORT_KM = 10;
+const REPORT_KM = Number(process.env.CONJ_REPORT_KM) || 10;
 const WINDOW_HOURS = Number(process.env.CONJ_WINDOW_HOURS) || 24;
 const STEP_SEC = Number(process.env.CONJ_STEP_SEC) || 30;
-const CACHE_FILE = path.join(os.tmpdir(), 'astra-celestrak-catalog.json');
-
-const REDIS_KEY = 'astra:celestrak:catalog';
-const REDIS_TTL_SEC = 48 * 3600; // keep a stale copy for fallback; freshness is checked via fetchedAt
-
-// Optional Redis cache so the catalogue survives backend rebuilds (CelesTrak blocks repeat downloads)
-let redisCache = null;
-try { redisCache = require('./redis').cache || null; } catch (e) { redisCache = null; }
-
-const withTimeout = (p, ms) => Promise.race([p, new Promise((resolve) => setTimeout(() => resolve(null), ms))]);
-const redisGet = async () => {
-  if (!redisCache || typeof redisCache.get !== 'function') return null;
-  try {
-    const v = await withTimeout(redisCache.get(REDIS_KEY), 3000);
-    if (!v) return null;
-    return typeof v === 'string' ? JSON.parse(v) : v;
-  } catch (e) { return null; }
+const PC_CRITICAL = Number(process.env.PC_CRITICAL) || 1e-4;
+const PC_WARNING = Number(process.env.PC_WARNING) || 1e-6;
+// Persist the catalogue on the backend_logs volume so it survives container rebuilds
+// (CelesTrak blocks clients that re-download the same data too often).
+const cacheDir = () => {
+  const candidates = [process.env.CATALOG_CACHE_DIR, path.join(__dirname, '..', 'logs'), os.tmpdir()].filter(Boolean);
+  for (const d of candidates) {
+    try { fs.mkdirSync(d, { recursive: true }); fs.accessSync(d, fs.constants.W_OK); return d; } catch (e) { /* try next */ }
+  }
+  return os.tmpdir();
 };
-const redisSet = async (value) => {
-  if (!redisCache || typeof redisCache.set !== 'function') return;
-  try { await withTimeout(redisCache.set(REDIS_KEY, value, REDIS_TTL_SEC), 5000); } catch (e) { /* optional */ }
-};
+const CACHE_FILE = path.join(cacheDir(), 'celestrak-catalog.json');
 
 let catalog = null;
+let catalogIndex = null;
 let catalogPromise = null;
 const results = new Map();
 const inflight = new Map();
 
-// ---------- helpers ----------
-const hash = (s) => {
-  let x = 0;
-  for (const c of String(s)) x = (x * 31 + c.charCodeAt(0)) | 0;
-  return Math.abs(x);
+const indexCatalog = (c) => {
+  catalogIndex = new Map(c.objects.map((o) => [String(Number(o.norad)), o]));
 };
 
-const parseConfig = (cfg) => {
-  if (!cfg) return {};
-  if (typeof cfg === 'string') {
-    try { return JSON.parse(cfg); } catch (e) { return {}; }
-  }
-  return cfg;
-};
-
-// Same circular-orbit model as the frontend visualiser
-const twinOrbit = (sc) => {
-  const cfg = parseConfig(sc.config);
-  const altitude = Number(cfg.altitude) || 550;
-  const a = RE + altitude;
-  return {
-    altitude,
-    a,
-    n: Math.sqrt(MU / (a * a * a)),
-    inc: Number(cfg.inclination ?? 53) * DEG,
-    raan: (cfg.raan != null ? Number(cfg.raan) : hash(sc.id) % 360) * DEG,
-    u0: (cfg.trueAnomaly != null ? Number(cfg.trueAnomaly) : hash(`${sc.id}u`) % 360) * DEG,
-    epoch: EPOCH,
-  };
-};
-
-const httpGet = (url, redirects = 3) => new Promise((resolve, reject) => {
-  const req = https.get(url, {
-    headers: { 'User-Agent': 'ASTRA-DigitalTwin/2.0 (conjunction screening; cached 6h)' },
-    timeout: 45000,
-  }, (res) => {
-    if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location && redirects > 0) {
-      res.resume();
-      return resolve(httpGet(new URL(res.headers.location, url).toString(), redirects - 1));
-    }
-    if (res.statusCode !== 200) {
-      res.resume();
-      return reject(new Error(`HTTP ${res.statusCode}`));
-    }
-    let data = '';
-    res.setEncoding('utf8');
-    res.on('data', (c) => { data += c; });
-    res.on('end', () => resolve(data));
-  });
-  req.on('timeout', () => req.destroy(new Error('timeout')));
-  req.on('error', reject);
-});
-
-const parseTle = (text) => {
-  const lines = text.split(/\r?\n/).map((l) => l.replace(/\s+$/, '')).filter(Boolean);
-  const out = [];
-  for (let i = 0; i < lines.length - 1; i++) {
-    const l1 = lines[i];
-    const l2 = lines[i + 1];
-    if (!(l1.startsWith('1 ') && l2.startsWith('2 '))) continue;
-    const prev = i > 0 ? lines[i - 1] : '';
-    const norad = l1.slice(2, 7).trim();
-    const name = prev && !prev.startsWith('1 ') && !prev.startsWith('2 ') ? prev.trim() : `NORAD ${norad}`;
-    const inc = parseFloat(l2.slice(8, 16));
-    const ecc = parseFloat(`0.${l2.slice(26, 33).trim()}`);
-    const revPerDay = parseFloat(l2.slice(52, 63));
-    if (!revPerDay || Number.isNaN(ecc)) { i++; continue; }
-    const n = (revPerDay * 2 * Math.PI) / 86400;
-    const a = Math.cbrt(MU / (n * n));
-    out.push({ name, norad, l1, l2, inc, rp: a * (1 - ecc), ra: a * (1 + ecc) });
-    i++;
-  }
-  return out;
+const withShell = (t) => {
+  const ecc = parseFloat(`0.${t.l2.slice(26, 33).trim()}`);
+  const revPerDay = parseFloat(t.l2.slice(52, 63));
+  if (!revPerDay || Number.isNaN(ecc)) return null;
+  const n = (revPerDay * 2 * Math.PI) / 86400;
+  const a = Math.cbrt(O.MU / (n * n));
+  return { ...t, rp: a * (1 - ecc), ra: a * (1 + ecc) };
 };
 
 const readDiskCache = () => {
@@ -141,23 +69,16 @@ const loadCatalog = async () => {
   catalogPromise = (async () => {
     const fresh = (c) => c && Array.isArray(c.objects) && Date.now() - c.fetchedAt < CATALOG_TTL_MS;
     const disk = readDiskCache();
-    if (fresh(disk)) { catalog = disk; return catalog; }
-    const cached = await redisGet();
-    if (fresh(cached)) {
-      catalog = cached;
-      try { fs.writeFileSync(CACHE_FILE, JSON.stringify(cached)); } catch (e) { /* optional */ }
-      return catalog;
-    }
-    const fallback = [disk, cached].filter((c) => c && Array.isArray(c.objects))
-      .sort((x, y) => y.fetchedAt - x.fetchedAt)[0] || null;
+    if (fresh(disk)) { catalog = disk; indexCatalog(catalog); return catalog; }
+    const fallback = disk && Array.isArray(disk.objects) ? disk : null;
 
     const byNorad = new Map();
     const sources = [];
     const errors = [];
     for (const group of GROUPS) {
       try {
-        const txt = await httpGet(`https://celestrak.org/NORAD/elements/gp.php?GROUP=${group}&FORMAT=tle`);
-        const objs = parseTle(txt);
+        const txt = await getText(`https://celestrak.org/NORAD/elements/gp.php?GROUP=${group}&FORMAT=tle`);
+        const objs = parseTle(txt).map(withShell).filter(Boolean);
         objs.forEach((o) => { if (!byNorad.has(o.norad)) byNorad.set(o.norad, o); });
         sources.push({ group, count: objs.length });
       } catch (e) {
@@ -168,18 +89,28 @@ const loadCatalog = async () => {
     if (!byNorad.size) {
       if (fallback) {
         catalog = { ...fallback, stale: true, errors, retryAt: Date.now() + 30 * 60 * 1000 };
+        indexCatalog(catalog);
         return catalog;
       }
       throw new Error(`Could not download orbital data from CelesTrak (${errors.join('; ') || 'no data'})`);
     }
 
     catalog = { fetchedAt: Date.now(), objects: [...byNorad.values()], sources, errors, stale: false };
-    try { fs.writeFileSync(CACHE_FILE, JSON.stringify(catalog)); } catch (e) { /* cache is optional */ }
-    await redisSet(catalog);
+    indexCatalog(catalog);
+    try { fs.writeFileSync(CACHE_FILE, JSON.stringify(catalog)); } catch (e) { /* optional */ }
     return catalog;
   })().finally(() => { catalogPromise = null; });
 
   return catalogPromise;
+};
+
+// Lookup in the catalogue already in memory or in the on-disk cache (never downloads).
+const findInCatalog = (norad) => {
+  if (!catalogIndex) {
+    const disk = readDiskCache();
+    if (disk && Array.isArray(disk.objects)) { catalog = catalog || disk; indexCatalog(disk); }
+  }
+  return catalogIndex ? catalogIndex.get(String(Number(norad))) || null : null;
 };
 
 const runWorker = (workerData) => new Promise((resolve, reject) => {
@@ -195,109 +126,134 @@ const runWorker = (workerData) => new Promise((resolve, reject) => {
   });
 });
 
-// Simplified 2D probability for a small hard-body radius and isotropic position uncertainty.
-// sigma grows with the age of the TLE (TLEs are ~1 km accurate at epoch and degrade by roughly 1 km/day).
-const estimatePc = (missKm, ageDays) => {
-  const sigma = Math.max(0.5, 0.5 + 1.0 * Math.abs(ageDays));
-  const s2 = sigma * sigma;
-  return Math.min(1, ((HBR_KM * HBR_KM) / (2 * s2)) * Math.exp(-(missKm * missKm) / (2 * s2)));
-};
+const SEV_RANK = { nominal: 0, warning: 1, critical: 2 };
 
 const classify = (pc, miss) => {
-  if (pc >= 1e-4) return 'critical';
-  if (pc >= 1e-6 || miss < 1) return 'warning';
+  if (pc >= PC_CRITICAL) return 'critical';
+  if (pc >= PC_WARNING || miss < 1) return 'warning';
   return 'nominal';
 };
 
 const RECOMMEND = {
-  critical: 'High collision risk. Plan an avoidance manoeuvre and request refined tracking (CDM) before committing the burn.',
-  warning: 'Monitor closely. Re-screen when newer orbital data is available; prepare a contingency manoeuvre.',
+  critical: 'High collision risk. Request a CDM / refined tracking and evaluate the manoeuvre options before committing a burn.',
+  warning: 'Monitor closely. Re-screen when newer orbital data is available and keep a contingency manoeuvre ready.',
   nominal: 'No action required.',
 };
 
-const buildReport = (raw, ctx) => {
-  const now = Date.now();
-  const events = raw.events.map((e) => {
-    const pc = estimatePc(e.missKm, e.ageDays);
-    const severity = classify(pc, e.missKm);
-    return {
-      id: `${e.objectId}-${Math.round(e.tca / 1000)}`,
-      objectName: e.objectName,
-      objectId: e.objectId,
-      source: e.source,
-      severity,
-      tcaTime: new Date(e.tca).toISOString(),
-      hoursToTCA: ((e.tca - now) / 3600000).toFixed(1),
-      missDistance: e.missKm.toFixed(3),
-      relativeVelocity: e.relV.toFixed(2),
-      collisionProbability: pc.toExponential(1),
-      pcValue: pc,
-      tleAgeDays: e.ageDays.toFixed(1),
-      recommendation: RECOMMEND[severity],
-    };
-  }).sort((a, b) => b.pcValue - a.pcValue || parseFloat(a.missDistance) - parseFloat(b.missDistance));
-
-  const top = events.slice(0, 25).map(({ pcValue, ...rest }) => rest);
-  return {
-    totalEvents: events.length,
-    criticalCount: events.filter((e) => e.severity === 'critical').length,
-    warningCount: events.filter((e) => e.severity === 'warning').length,
-    events: top,
-    screening: {
-      method: 'SGP4 propagation of CelesTrak GP data, 30 s grid search + golden-section refinement to TCA',
-      pcModel: 'Estimated (2D, 15 m combined hard-body radius, uncertainty from TLE age). Not an operational CDM.',
-      windowHours: ctx.hours,
-      stepSeconds: ctx.stepSec,
-      reportThresholdKm: REPORT_KM,
-      catalogObjects: ctx.catalogSize,
-      candidatesScreened: raw.screened,
-      candidatesFailed: raw.failed,
-      fleetTwinsScreened: ctx.fleetCount,
-      catalogFetchedAt: new Date(ctx.fetchedAt).toISOString(),
-      catalogStale: !!ctx.stale,
-      sources: ctx.sources,
-      twinAltitudeKm: ctx.altitude,
-      computeSeconds: ctx.computeSeconds,
-    },
-    generatedAt: new Date(now).toISOString(),
-  };
+const twinAgeDays = (model, atMs) => {
+  if (model.kind !== 'tle') return null;
+  return (atMs - O.tleEpochMs(O.satrec(model.l1, model.l2))) / 86400000;
 };
 
-// ---------- public API ----------
-const screen = async (sc, fleet = [], { hours = WINDOW_HOURS } = {}) => {
-  const key = `${sc.id}:${JSON.stringify(parseConfig(sc.config))}:${hours}`;
+// Turn raw worker events into scored events (Pc, severity), keeping states for manoeuvre analysis.
+const scoreEvents = (raw, model) => raw.map((e) => {
+  const ageObj = e.objEpochMs ? (e.tca - e.objEpochMs) / 86400000 : null;
+  const ageTwin = twinAgeDays(model, e.tca);
+  const est = PC.estimatePc(e.twin, e.obj, ageTwin, ageObj);
+  const severity = classify(est.pc, e.missKm);
+  return {
+    ...e,
+    relV: O.norm(O.sub(e.obj.v, e.twin.v)),
+    pc: est.pc,
+    pcMethod: est.method,
+    ageObj,
+    ageTwin,
+    severity,
+  };
+}).sort((a, b) => SEV_RANK[b.severity] - SEV_RANK[a.severity] || b.pc - a.pc || a.missKm - b.missKm);
+
+const publicEvent = (e, now) => ({
+  id: `${e.objectId}-${Math.round(e.tca / 1000)}`,
+  objectName: e.objectName,
+  objectId: e.objectId,
+  source: e.source,
+  severity: e.severity,
+  tcaTime: new Date(e.tca).toISOString(),
+  hoursToTCA: ((e.tca - now) / 3600000).toFixed(1),
+  missDistance: e.missKm.toFixed(3),
+  relativeVelocity: e.relV.toFixed(2),
+  collisionProbability: e.pc.toExponential(1),
+  pcMethod: e.pcMethod,
+  tleAgeDays: e.ageObj != null ? e.ageObj.toFixed(1) : null,
+  recommendation: RECOMMEND[e.severity],
+});
+
+const cacheKey = (sc, hours) => `${sc.id}:${sc.tle_line1 || ''}:${sc.tle_line2 || ''}:${JSON.stringify(O.parseConfig(sc.config))}:${hours}`;
+
+/**
+ * Screen a twin against the catalogue and the rest of its fleet.
+ * Returns { report (API-safe), events (scored, with states), model, catalog meta }.
+ */
+const screenDetailed = async (sc, fleet = [], { hours = WINDOW_HOURS, force = false } = {}) => {
+  const key = cacheKey(sc, hours);
   const hit = results.get(key);
-  if (hit && Date.now() - hit.at < RESULT_TTL_MS) return hit.data;
+  if (!force && hit && Date.now() - hit.at < RESULT_TTL_MS) return hit.data;
   if (inflight.has(key)) return inflight.get(key);
 
   const job = (async () => {
     const cat = await loadCatalog();
-    const twin = twinOrbit(sc);
+    const model = O.twinModel(sc);
+    const el = O.describe(model);
+    const ownNorad = model.kind === 'tle' ? String(Number(model.l1.slice(2, 7))) : null;
+    const lo = O.RE + el.perigeeKm - SHELL_PAD_KM;
+    const hi = O.RE + el.apogeeKm + SHELL_PAD_KM;
     const candidates = cat.objects
-      .filter((o) => o.rp <= twin.a + SHELL_PAD_KM && o.ra >= twin.a - SHELL_PAD_KM)
+      .filter((o) => o.rp <= hi && o.ra >= lo && String(Number(o.norad)) !== ownNorad)
       .map(({ name, norad, l1, l2 }) => ({ name, norad, l1, l2 }));
     const others = fleet
       .filter((f) => String(f.id) !== String(sc.id))
-      .map((f) => ({ name: f.name, id: String(f.id), orbit: twinOrbit(f) }))
-      .filter((f) => Math.abs(f.orbit.a - twin.a) <= SHELL_PAD_KM);
+      .map((f) => ({ name: f.name, id: String(f.id), model: O.twinModel(f) }))
+      .filter((f) => {
+        if (f.model.kind === 'tle' && ownNorad && String(Number(f.model.l1.slice(2, 7))) === ownNorad) return false;
+        try { const e = O.describe(f.model); return O.RE + e.perigeeKm <= hi && O.RE + e.apogeeKm >= lo; } catch (e) { return false; }
+      });
 
     const started = Date.now();
+    const startMs = Date.now();
     const raw = await runWorker({
-      twin, candidates, others, startMs: Date.now(), hours, stepSec: STEP_SEC, reportKm: REPORT_KM,
+      twin: model, candidates, others, startMs, hours, stepSec: STEP_SEC, reportKm: REPORT_KM,
     });
+    const events = scoreEvents(raw.events, model);
+    const now = Date.now();
 
-    const data = buildReport(raw, {
-      hours,
-      stepSec: STEP_SEC,
-      catalogSize: cat.objects.length,
-      fleetCount: others.length,
-      fetchedAt: cat.fetchedAt,
-      stale: cat.stale,
-      sources: cat.sources,
-      altitude: twin.altitude,
-      computeSeconds: ((Date.now() - started) / 1000).toFixed(1),
-    });
+    const report = {
+      totalEvents: events.length,
+      criticalCount: events.filter((e) => e.severity === 'critical').length,
+      warningCount: events.filter((e) => e.severity === 'warning').length,
+      events: events.slice(0, 25).map((e) => publicEvent(e, now)),
+      twin: {
+        orbitSource: model.kind === 'tle' ? 'tle' : 'design',
+        noradId: ownNorad ? Number(ownNorad) : null,
+        tleEpoch: el.epoch,
+        tleAgeDays: model.kind === 'tle' ? Number(twinAgeDays(model, now).toFixed(2)) : null,
+        perigeeKm: Number(el.perigeeKm.toFixed(1)),
+        apogeeKm: Number(el.apogeeKm.toFixed(1)),
+        inclinationDeg: Number(el.inclinationDeg.toFixed(3)),
+      },
+      screening: {
+        method: `SGP4 propagation of CelesTrak GP data, ${STEP_SEC} s grid search + golden-section refinement to TCA`,
+        pcModel: `Foster 2D, combined hard-body radius ${(PC.hbrKm() * 1000).toFixed(0)} m, covariance estimated from TLE age. Not an operational CDM.`,
+        thresholds: { critical: PC_CRITICAL, warning: PC_WARNING },
+        windowHours: hours,
+        windowStart: new Date(startMs).toISOString(),
+        stepSeconds: STEP_SEC,
+        reportThresholdKm: REPORT_KM,
+        catalogObjects: cat.objects.length,
+        candidatesScreened: raw.screened,
+        candidatesFailed: raw.failed,
+        fleetTwinsScreened: others.length,
+        catalogFetchedAt: new Date(cat.fetchedAt).toISOString(),
+        catalogStale: !!cat.stale,
+        sources: cat.sources,
+        twinAltitudeKm: Number(el.altitudeKm.toFixed(1)),
+        computeSeconds: ((Date.now() - started) / 1000).toFixed(1),
+      },
+      generatedAt: new Date(now).toISOString(),
+    };
+
+    const data = { report, events, model, startMs, hours, candidates, others };
     results.set(key, { at: Date.now(), data });
+    if (results.size > 200) results.delete(results.keys().next().value);
     return data;
   })().finally(() => inflight.delete(key));
 
@@ -305,64 +261,23 @@ const screen = async (sc, fleet = [], { hours = WINDOW_HOURS } = {}) => {
   return job;
 };
 
-const planManoeuvre = (sc, report) => {
-  const cfg = parseConfig(sc.config);
-  const altitude = Number(cfg.altitude) || 550;
-  const budget = Number(cfg.deltaV ?? cfg.deltaVBudget ?? cfg.dv ?? 0);
+const screen = async (sc, fleet, opts) => (await screenDetailed(sc, fleet, opts)).report;
 
-  const threat = report.events.find((e) => e.severity === 'critical')
-    || report.events.find((e) => e.severity === 'warning');
-
-  if (!threat) {
-    return {
-      required: false,
-      message: 'No critical or warning conjunctions in the screening window. No manoeuvre required.',
-      deltaVBudgetRemaining: budget,
-    };
-  }
-
-  const dh = threat.severity === 'critical' ? 2 : 1; // km of radial separation
-  const r1 = RE + altitude;
-  const r2 = r1 + dh;
-  const dv1 = Math.sqrt(MU / r1) * (Math.sqrt((2 * r2) / (r1 + r2)) - 1) * 1000;   // m/s
-  const dv2 = Math.sqrt(MU / r2) * (1 - Math.sqrt((2 * r1) / (r1 + r2))) * 1000;   // m/s
-  const transferSec = Math.PI * Math.sqrt(Math.pow((r1 + r2) / 2, 3) / MU);
-  const total = dv1 + dv2;
-  const after = budget - total;
-
-  const tca = Date.parse(threat.tcaTime);
-  const burn1 = new Date(Math.max(Date.now() + 10 * 60000, tca - (transferSec * 1000 + 2 * 3600000)));
-  const burn2 = new Date(burn1.getTime() + transferSec * 1000);
-
-  let warning = null;
-  if (after < 0) warning = 'Insufficient ΔV budget for this manoeuvre.';
-  else if (after < 30) warning = 'Low ΔV reserve after manoeuvre. Keep at least 30 m/s for end-of-life deorbit.';
-
-  return {
-    required: true,
-    threat: {
-      objectName: threat.objectName,
-      objectId: threat.objectId,
-      severity: threat.severity,
-      tcaTime: threat.tcaTime,
-      missDistance: threat.missDistance,
-      collisionProbability: threat.collisionProbability,
-    },
-    currentAltitude: altitude,
-    recommendedAltitude: altitude + dh,
-    manoeuvre: {
-      strategy: `Hohmann raise of ${dh} km`,
-      dv1: `${dv1.toFixed(3)} m/s`,
-      dv2: `${dv2.toFixed(3)} m/s`,
-      totalDeltaV: `${total.toFixed(3)} m/s`,
-      transferTime: `${(transferSec / 60).toFixed(1)} min`,
-      burn1Time: burn1.toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
-      burn2Time: burn2.toISOString().replace('T', ' ').slice(0, 16) + ' UTC',
-    },
-    deltaVBudgetRemaining: budget,
-    budgetAfterManoeuvre: after.toFixed(2),
-    warning,
-  };
+// Re-screen a modified twin trajectory (twin model + sampled position delta) against the same candidates.
+const rescreen = async (base, delta) => {
+  const raw = await runWorker({
+    twin: { ...base.model, delta },
+    candidates: base.candidates,
+    others: base.others,
+    startMs: base.startMs,
+    hours: base.hours,
+    stepSec: STEP_SEC,
+    reportKm: REPORT_KM,
+  });
+  return scoreEvents(raw.events, base.model);
 };
 
-module.exports = { screen, planManoeuvre, loadCatalog };
+module.exports = {
+  screen, screenDetailed, rescreen, loadCatalog, findInCatalog, classify, scoreEvents, publicEvent,
+  thresholds: { critical: PC_CRITICAL, warning: PC_WARNING },
+};

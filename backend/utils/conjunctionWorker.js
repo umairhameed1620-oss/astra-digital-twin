@@ -1,41 +1,53 @@
-// Worker thread: propagates the screening catalogue with SGP4 and finds close approaches to the twin.
+// Worker thread: propagates candidate objects with SGP4 and finds close approaches to the twin.
+// Input (workerData):
+//   twin:       twin model (lib/orbit twinModel) + optional delta {startMs, stepMs, dx, dy, dz}
+//   candidates: [{name, norad, l1, l2}] catalogue objects inside the twin's altitude shell
+//   others:     [{name, id, model}] other twins in the same fleet
+//   startMs, hours, stepSec, reportKm
+// Output: { events: [{objectName, objectId, source, tca, missKm, twin:{r,v}, obj:{r,v}, objEpochMs}], screened, failed }
 const { parentPort, workerData } = require('worker_threads');
-const satellite = require('satellite.js');
+const O = require('../lib/orbit');
 
-const MAX_REL_V = 16; // km/s, upper bound for LEO relative velocity
+const MAX_REL_V = 16; // km/s, upper bound for LEO relative speed
 const PHI = (Math.sqrt(5) - 1) / 2;
 
 const { twin, candidates, others, startMs, hours, stepSec, reportKm } = workerData;
 
-// Circular orbit in an inertial frame (same model as the frontend)
-const eci = (o, ms) => {
-  const u = o.u0 + o.n * ((ms - o.epoch) / 1000);
-  const cu = Math.cos(u), su = Math.sin(u);
-  const cO = Math.cos(o.raan), sO = Math.sin(o.raan);
-  const ci = Math.cos(o.inc), si = Math.sin(o.inc);
-  return { x: o.a * (cO * cu - sO * su * ci), y: o.a * (sO * cu + cO * su * ci), z: o.a * (su * si) };
-};
+const baseTwin = O.stateFn(twin.kind === 'tle' ? { kind: 'tle', l1: twin.l1, l2: twin.l2 } : twin);
 
-const eciVel = (o, ms) => {
-  const u = o.u0 + o.n * ((ms - o.epoch) / 1000);
-  const cu = Math.cos(u), su = Math.sin(u);
-  const cO = Math.cos(o.raan), sO = Math.sin(o.raan);
-  const ci = Math.cos(o.inc), si = Math.sin(o.inc);
-  const k = o.a * o.n;
-  return { x: k * (-cO * su - sO * cu * ci), y: k * (-sO * su + cO * cu * ci), z: k * (cu * si) };
+// Optional position offset (manoeuvre re-screening): linear interpolation of sampled delta.
+const delta = twin.delta || null;
+const deltaAt = (ms) => {
+  if (!delta) return null;
+  const f = (ms - delta.startMs) / delta.stepMs;
+  if (f <= 0) return null;
+  const i = Math.min(Math.floor(f), delta.dx.length - 2);
+  if (i < 0) return null;
+  const w = Math.min(1, f - i);
+  return O.v3(
+    delta.dx[i] + (delta.dx[i + 1] - delta.dx[i]) * w,
+    delta.dy[i] + (delta.dy[i + 1] - delta.dy[i]) * w,
+    delta.dz[i] + (delta.dz[i + 1] - delta.dz[i]) * w
+  );
+};
+const twinState = (ms) => {
+  const s = baseTwin(ms);
+  if (!s) return null;
+  const d = deltaAt(ms);
+  return d ? { r: O.add(s.r, d), v: s.v } : s;
 };
 
 const N = Math.floor((hours * 3600) / stepSec) + 1;
 const stepMs = stepSec * 1000;
 const COARSE_KM = (MAX_REL_V * stepSec) / 2 + 25;
 
-// Pre-compute the twin's positions on the grid
 const tx = new Float64Array(N);
 const ty = new Float64Array(N);
 const tz = new Float64Array(N);
 for (let i = 0; i < N; i++) {
-  const p = eci(twin, startMs + i * stepMs);
-  tx[i] = p.x; ty[i] = p.y; tz[i] = p.z;
+  const s = twinState(startMs + i * stepMs);
+  if (!s) throw new Error('Twin orbit could not be propagated over the screening window');
+  tx[i] = s.r.x; ty[i] = s.r.y; tz[i] = s.r.z;
 }
 
 const goldenMin = (f, lo, hi) => {
@@ -53,13 +65,12 @@ const events = [];
 let screened = 0;
 let failed = 0;
 
-// Generic screen of one object given position/velocity functions (km, km/s)
-const screenObject = (getPos, getVel, meta) => {
+const screenObject = (objState, meta) => {
   const dist = (ms) => {
-    const p = getPos(ms);
-    if (!p) return Infinity;
-    const q = eci(twin, ms);
-    return Math.hypot(p.x - q.x, p.y - q.y, p.z - q.z);
+    const p = objState(ms);
+    const q = twinState(ms);
+    if (!p || !q) return Infinity;
+    return O.norm(O.sub(p.r, q.r));
   };
   const found = [];
 
@@ -69,28 +80,30 @@ const screenObject = (getPos, getVel, meta) => {
     const hi = startMs + Math.min(N - 1, k + 1) * stepMs;
     const m = goldenMin(dist, lo, hi);
     if (!(m.d < reportKm)) return;
-    if (found.some((t) => Math.abs(t - m.t) < 60000)) return; // same encounter
+    if (found.some((t) => Math.abs(t - m.t) < 60000)) return;
     found.push(m.t);
-    const v = getVel(m.t);
-    const w = eciVel(twin, m.t);
-    const relV = v ? Math.hypot(v.x - w.x, v.y - w.y, v.z - w.z) : 0;
+    const p = objState(m.t);
+    const q = twinState(m.t);
     events.push({
       objectName: meta.name,
       objectId: meta.id,
       source: meta.source,
       tca: m.t,
       missKm: m.d,
-      relV,
-      ageDays: meta.epochMs ? (m.t - meta.epochMs) / 86400000 : 0,
+      twin: q,
+      obj: p,
+      objEpochMs: meta.epochMs || null,
+      tle: meta.tle || null,
+      model: meta.model || null,
     });
   };
 
-  let d0 = Infinity; // two steps back
-  let d1 = Infinity; // previous step
+  let d0 = Infinity;
+  let d1 = Infinity;
   for (let i = 0; i < N; i++) {
-    const p = getPos(startMs + i * stepMs);
+    const p = objState(startMs + i * stepMs);
     if (!p) return false;
-    const d = Math.hypot(p.x - tx[i], p.y - ty[i], p.z - tz[i]);
+    const d = Math.hypot(p.r.x - tx[i], p.r.y - ty[i], p.r.z - tz[i]);
     if (i >= 1) check(i - 1, d1, d0, d);
     d0 = d1;
     d1 = d;
@@ -99,33 +112,27 @@ const screenObject = (getPos, getVel, meta) => {
   return true;
 };
 
-// Catalogue objects (SGP4)
 for (const c of candidates) {
   let rec;
-  try { rec = satellite.twoline2satrec(c.l1, c.l2); } catch (e) { failed++; continue; }
-  if (!rec || rec.error) { failed++; continue; }
-  const epochMs = (rec.jdsatepoch - 2440587.5) * 86400000 + (rec.jdsatepochF ? rec.jdsatepochF * 86400000 : 0);
-
-  const prop = (ms) => {
-    const r = satellite.sgp4(rec, (ms - epochMs) / 60000);
-    if (!r || !r.position || typeof r.position !== 'object') return null;
-    return r;
-  };
-  const ok = screenObject(
-    (ms) => { const r = prop(ms); return r ? r.position : null; },
-    (ms) => { const r = prop(ms); return r ? r.velocity : null; },
-    { name: c.name, id: c.norad, source: 'CelesTrak', epochMs }
-  );
+  try { rec = O.satrec(c.l1, c.l2); } catch (e) { failed++; continue; }
+  const epochMs = O.tleEpochMs(rec);
+  const ok = screenObject((ms) => O.sgp4State(rec, ms), {
+    name: c.name, id: c.norad, source: 'CelesTrak', epochMs, tle: { l1: c.l1, l2: c.l2 },
+  });
   if (ok) screened++; else failed++;
 }
 
-// Other twins in the user's fleet (same analytic model)
 for (const o of others) {
-  screenObject(
-    (ms) => eci(o.orbit, ms),
-    (ms) => eciVel(o.orbit, ms),
-    { name: `${o.name} (ASTRA twin)`, id: `TWIN-${o.id.slice(0, 8)}`, source: 'ASTRA fleet', epochMs: 0 }
-  );
+  let fn;
+  try { fn = O.stateFn(o.model); } catch (e) { continue; }
+  screenObject(fn, {
+    name: `${o.name} (ASTRA twin)`,
+    id: o.model.kind === 'tle' && o.model.norad ? String(o.model.norad) : `TWIN-${String(o.id).slice(0, 8)}`,
+    source: 'ASTRA fleet',
+    epochMs: o.model.kind === 'tle' ? O.tleEpochMs(O.satrec(o.model.l1, o.model.l2)) : null,
+    tle: o.model.kind === 'tle' ? { l1: o.model.l1, l2: o.model.l2 } : null,
+    model: o.model,
+  });
 }
 
 parentPort.postMessage({ events, screened, failed, steps: N });

@@ -39,7 +39,9 @@ const TelemetryPage = () => {
 
   useEffect(() => {
     scApi.getOne(id).then(res => setSc(res.data)).catch(console.error);
-    socketRef.current = io(process.env.REACT_APP_API_URL?.replace('/api', '') || 'http://localhost:5001');
+    const apiUrl = process.env.REACT_APP_API_URL || 'http://localhost:5001/api';
+    const socketBase = apiUrl.startsWith('/') ? window.location.origin : apiUrl.replace(/\/api\/?$/, '');
+    socketRef.current = io(socketBase, { auth: { token: localStorage.getItem('astra_token') } });
     socketRef.current.on('telemetry_update', (data) => {
       if (data.spacecraftId === id) {
         setTelemetry(data);

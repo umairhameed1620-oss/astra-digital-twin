@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
+import * as satellite from 'satellite.js';
 
 const PLANET_COLORS = {
   satellite: 0x00d4ff,
@@ -10,7 +11,7 @@ const PLANET_COLORS = {
 
 // ---- Physical constants ----
 const MU = 398600.4418;            // Earth gravitational parameter, km^3/s^2
-const RE = 6371;                   // Earth radius, km (scene unit = 1 RE)
+const RE = 6378.137;               // Earth equatorial radius, km (scene unit = 1 RE); matches the backend
 const DEG = Math.PI / 180;
 const EPOCH = Date.UTC(2026, 0, 1); // reference epoch so positions are stable across reloads
 const GT_N = 360;                  // ground-track points
@@ -46,8 +47,15 @@ const hash = (s) => {
   return Math.abs(x);
 };
 
-// Circular orbit position in ECI (km)
+// Position in ECI/TEME (km): SGP4 for twins linked to a real TLE, otherwise the circular design orbit.
 const eci = (o, ms) => {
+  if (o.kind === 'tle') {
+    const r = satellite.sgp4(o.rec, (ms - o.epoch) / 60000);
+    const p = r && r.position;
+    if (!p || typeof p !== 'object') return o.last || { X: o.a, Y: 0, Z: 0 };
+    o.last = { X: p.x, Y: p.y, Z: p.z, V: r.velocity };
+    return o.last;
+  }
   const dt = (ms - o.epoch) / 1000;
   const u = o.u0 + o.n * dt;
   const cu = Math.cos(u), su = Math.sin(u);
@@ -429,7 +437,8 @@ const OrbitalVisualiser = ({ spacecraft = [], telemetry = {}, selectedId, onSele
             lat: g.lat / DEG,
             lon: g.lon / DEG,
             alt: g.r - RE,
-            vel: Math.sqrt(MU / obj.orbit.a),
+            vel: obj.orbit.kind === 'tle' && p.V ? Math.hypot(p.V.x, p.V.y, p.V.z) : Math.sqrt(MU / obj.orbit.a),
+            source: obj.orbit.kind === 'tle' ? `NORAD ${obj.orbit.norad}` : 'Design orbit',
             period: obj.orbit.period / 60,
             inc: obj.orbit.inc / DEG,
             eclipse,
@@ -544,18 +553,40 @@ const OrbitalVisualiser = ({ spacecraft = [], telemetry = {}, selectedId, onSele
       let track = null;
 
       if (sc.type !== 'rocket' && sc.type !== 'rover') {
-        const altKm = Number(cfg.altitude) || 550;
-        const a = RE + altKm;
-        const n = Math.sqrt(MU / (a * a * a));
-        orbit = {
-          a,
-          n,
-          period: (2 * Math.PI) / n,
-          inc: Number(cfg.inclination ?? 53) * DEG,
-          raan: (cfg.raan != null ? Number(cfg.raan) : hash(sc.id) % 360) * DEG,
-          u0: (cfg.trueAnomaly != null ? Number(cfg.trueAnomaly) : hash(`${sc.id}u`) % 360) * DEG,
-          epoch: EPOCH,
-        };
+        let rec = null;
+        if (sc.tle_line1 && sc.tle_line2) {
+          try {
+            rec = satellite.twoline2satrec(sc.tle_line1, sc.tle_line2);
+            if (rec.error) rec = null;
+          } catch (e) { rec = null; }
+        }
+        if (rec) {
+          const n = rec.no / 60; // rad/s
+          orbit = {
+            kind: 'tle',
+            rec,
+            norad: sc.norad_id || rec.satnum,
+            a: Math.cbrt(MU / (n * n)),
+            n,
+            period: (2 * Math.PI) / n,
+            inc: rec.inclo,
+            epoch: (rec.jdsatepoch - 2440587.5) * 86400000 + (rec.jdsatepochF || 0) * 86400000,
+          };
+        } else {
+          const altKm = Number(cfg.altitude) || 550;
+          const a = RE + altKm;
+          const n = Math.sqrt(MU / (a * a * a));
+          orbit = {
+            kind: 'circular',
+            a,
+            n,
+            period: (2 * Math.PI) / n,
+            inc: Number(cfg.inclination ?? 53) * DEG,
+            raan: (cfg.raan != null ? Number(cfg.raan) : hash(sc.id) % 360) * DEG,
+            u0: (cfg.trueAnomaly != null ? Number(cfg.trueAnomaly) : hash(`${sc.id}u`) % 360) * DEG,
+            epoch: EPOCH,
+          };
+        }
 
         // Full orbit ring (inertial frame)
         const ringPts = [];
@@ -600,6 +631,7 @@ const OrbitalVisualiser = ({ spacecraft = [], telemetry = {}, selectedId, onSele
     ['PERIOD', `${readout.period.toFixed(1)} min`],
     ['INCLINATION', `${readout.inc.toFixed(1)}°`],
     ['LIGHTING', readout.eclipse ? 'ECLIPSE' : 'SUNLIT'],
+    ['ORBIT', readout.source],
   ] : [];
 
   const btn = (active) => ({

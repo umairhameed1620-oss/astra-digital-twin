@@ -1,0 +1,10 @@
+# HTTPS reverse proxy for a public ASTRA server. Caddy obtains and renews certificates automatically.
+# Set ASTRA_DOMAIN (e.g. astra.example.com) and ACME_EMAIL in .env, and point the domain's DNS A record at the server.
+{$ASTRA_DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	reverse_proxy frontend:80
+}

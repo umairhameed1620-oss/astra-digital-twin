@@ -43,7 +43,8 @@ describe('SimulationEngine - Unit Tests', () => {
 
   describe('Power Simulation', () => {
     test('battery level should decrease during eclipse', () => {
-      engine.state.orbital.inEclipse = true;
+      // The engine derives eclipse from orbital position, so place the craft inside the eclipse arc.
+      engine.state.orbital.trueAnomaly = 190;
       const initial = engine.state.power.batteryLevel;
       engine.updateState();
       expect(engine.state.power.batteryLevel).toBeLessThan(initial);

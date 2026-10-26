@@ -10,6 +10,7 @@ import AnalyticsPage from './pages/AnalyticsPage';
 import VisualisePage from './pages/VisualisePage';
 import ConjunctionPage from './pages/ConjunctionPage';
 import AdminPage from './pages/AdminPage';
+import AlertsPage from './pages/AlertsPage';
 import LoginPage from './pages/LoginPage';
 
 const App = () => {
@@ -57,6 +58,7 @@ const App = () => {
           <Route path="/visualise" element={<VisualisePage />} />
           <Route path="/conjunction" element={<ConjunctionPage />} />
           <Route path="/missions" element={<MissionsPage />} />
+          <Route path="/alerts" element={<AlertsPage />} />
           <Route path="/ai" element={<AIBriefing />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           {user.role === 'admin' && <Route path="/admin" element={<AdminPage user={user} />} />}

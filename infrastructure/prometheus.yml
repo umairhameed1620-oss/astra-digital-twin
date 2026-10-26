@@ -8,11 +8,3 @@ scrape_configs:
       - targets: ['backend:5001']
     metrics_path: '/api/metrics'
     scrape_interval: 10s
-
-  - job_name: 'postgres'
-    static_configs:
-      - targets: ['postgres:9187']
-
-  - job_name: 'redis'
-    static_configs:
-      - targets: ['redis:9121']

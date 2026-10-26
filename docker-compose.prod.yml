@@ -1,0 +1,31 @@
+# Production overlay for a public server:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d --build
+# Adds HTTPS (Caddy), keeps every other service off the public internet. See docs/DEPLOYMENT.md.
+
+services:
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: astra_caddy
+    restart: unless-stopped
+    environment:
+      ASTRA_DOMAIN: ${ASTRA_DOMAIN:?Set ASTRA_DOMAIN in .env}
+    ports: ["80:80", "443:443"]
+    volumes:
+      - ./infrastructure/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [frontend]
+    networks: [astra_network]
+
+  frontend:
+    ports: !reset []
+
+  backend:
+    ports: !reset []
+    environment:
+      CORS_ORIGINS: https://${ASTRA_DOMAIN}
+      TRUST_PROXY: "2"
+
+volumes:
+  caddy_data:
+  caddy_config:
