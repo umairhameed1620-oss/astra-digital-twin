@@ -18,6 +18,10 @@ API.interceptors.response.use(
       localStorage.removeItem('astra_user');
       window.location.href = '/';
     }
+    // The team requires two-factor login and this user has not set it up yet.
+    if (err.response?.status === 403 && err.response?.data?.code === '2fa_setup_required' && window.location.pathname !== '/account') {
+      window.location.href = '/account?setup2fa=1';
+    }
     return Promise.reject(err);
   }
 );
@@ -36,6 +40,26 @@ export const errorText = (err, fallback = 'Something went wrong') =>
 export const auth = {
   login: (data) => API.post('/auth/login', data),
   register: (data) => API.post('/auth/register', data),
+  verify2fa: (challenge, code) => API.post('/auth/2fa/verify', { challenge, code }),
+  me: () => API.get('/auth/me'),
+  twoFactor: () => API.get('/auth/2fa'),
+  setup2fa: () => API.post('/auth/2fa/setup'),
+  enable2fa: (code) => API.post('/auth/2fa/enable', { code }),
+  disable2fa: (password, code) => API.post('/auth/2fa/disable', { password, code }),
+  newRecoveryCodes: (password, code) => API.post('/auth/2fa/recovery-codes', { password, code }),
+};
+
+export const team = {
+  get: () => API.get('/team'),
+  update: (data) => API.patch('/team', data),
+  invite: (email, role) => API.post('/team/invitations', { email, role }),
+  revoke: (id) => API.delete(`/team/invitations/${id}`),
+  lookup: (token) => API.get(`/team/invitations/lookup/${encodeURIComponent(token)}`),
+  accept: (token) => API.post('/team/invitations/accept', { token }),
+  setRole: (id, role) => API.patch(`/team/members/${id}`, { role }),
+  remove: (id) => API.delete(`/team/members/${id}`),
+  leave: () => API.delete('/team/members/me'),
+  transfer: (userId) => API.post('/team/transfer', { userId }),
 };
 
 export const spacecraft = {
@@ -49,6 +73,9 @@ export const spacecraft = {
   setAlertsMuted: (id, muted) => API.put(`/spacecraft/${id}/alerts`, { muted }),
   screenNow: (id) => API.post(`/spacecraft/${id}/screen`),
   uploadCdm: (id, content) => API.post(`/spacecraft/${id}/cdm`, { content }),
+  uploadEphemeris: (id, content, filename) => API.post(`/spacecraft/${id}/ephemeris`, { content, filename }),
+  ephemerides: (id) => API.get(`/spacecraft/${id}/ephemeris`),
+  removeEphemeris: (id, eid) => API.delete(`/spacecraft/${id}/ephemeris/${eid}`),
   cdms: (id) => API.get(`/spacecraft/${id}/cdms`),
   events: (id) => API.get(`/spacecraft/${id}/events`),
   delete: (id) => API.delete(`/spacecraft/${id}`),

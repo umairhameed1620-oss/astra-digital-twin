@@ -19,8 +19,8 @@ let lastSpaceTrack = 0;
 let lastValidationDay = null;
 const status = { lastTickAt: null, lastScreenings: 0, lastError: null, lastSpaceTrackAt: null, lastSpaceTrackError: null, lastValidationAt: null, lastValidationError: null };
 
-const fleetOf = async (userId) => (await query(
-  'SELECT id, name, type, config, user_id, norad_id, tle_line1, tle_line2 FROM spacecraft WHERE user_id=$1 AND is_deleted=false', [userId]
+const fleetOf = async (orgId) => (await query(
+  'SELECT id, name, type, config, user_id, organisation_id, norad_id, tle_line1, tle_line2 FROM spacecraft WHERE organisation_id=$1 AND is_deleted=false', [orgId]
 )).rows;
 
 // Update CelesTrak-linked twins from the freshly loaded catalogue (no extra network requests).
@@ -52,7 +52,7 @@ const screenDue = async () => {
   let n = 0;
   for (const sc of due) {
     try {
-      const fleet = await fleetOf(sc.user_id);
+      const fleet = await fleetOf(sc.organisation_id);
       const res = await conj.screenDetailed(sc, fleet, { force: true });
       metrics.screenings.inc({ trigger: 'scheduled' });
       const escalated = await events.persistScreening(sc, res.events);
@@ -96,17 +96,19 @@ const dailyValidation = async () => {
   if (lastValidationDay === day || now.getUTCHours() < VALIDATION_HOUR) return;
   lastValidationDay = day;
   const users = (await query(
-    `SELECT DISTINCT s.user_id FROM spacecraft s JOIN cdms c ON c.spacecraft_id = s.id
+    `SELECT DISTINCT s.organisation_id FROM spacecraft s JOIN cdms c ON c.spacecraft_id = s.id
       WHERE s.is_deleted=false AND s.norad_id IS NOT NULL AND c.tca > NOW() - INTERVAL '14 days'`
   )).rows;
   for (const u of users) {
     const done = (await query(
-      "SELECT 1 FROM validation_runs WHERE user_id=$1 AND trigger='scheduled' AND created_at::date = CURRENT_DATE", [u.user_id]
+      "SELECT 1 FROM validation_runs WHERE organisation_id=$1 AND trigger='scheduled' AND created_at::date = CURRENT_DATE", [u.organisation_id]
     )).rows.length;
     if (done) continue;
-    try { await validation.run(u.user_id, { trigger: 'scheduled' }); } catch (e) {
+    const owner = (await query("SELECT id FROM users WHERE organisation_id=$1 ORDER BY (org_role='owner') DESC, created_at LIMIT 1", [u.organisation_id])).rows[0];
+    if (!owner) continue;
+    try { await validation.run({ orgId: u.organisation_id, userId: owner.id }, { trigger: 'scheduled' }); } catch (e) {
       status.lastValidationError = e.message;
-      log.warn('Daily validation failed', { user: u.user_id, error: e.message });
+      log.warn('Daily validation failed', { team: u.organisation_id, error: e.message });
     }
   }
   status.lastValidationAt = new Date().toISOString();

@@ -26,7 +26,10 @@ router.get('/stats', handle(async (req, res) => {
 }));
 
 router.get('/users', handle(async (req, res) => {
-  const r = await query('SELECT id,name,email,organisation,role,is_active,last_login_at,created_at FROM users ORDER BY created_at DESC');
+  const r = await query(
+    `SELECT u.id, u.name, u.email, o.name AS organisation, u.org_role, u.role, u.is_active, u.totp_enabled, u.last_login_at, u.created_at
+       FROM users u JOIN organisations o ON o.id = u.organisation_id ORDER BY u.created_at DESC`
+  );
   res.json({ data: r.rows, pagination: { total: r.rows.length } });
 }));
 
@@ -43,6 +46,18 @@ router.patch('/users/:id', handle(async (req, res) => {
   if (!r.rows.length) throw new HttpError(404, 'User not found');
   await audit(req, 'user_updated', 'user', req.params.id, b);
   res.json({ message: 'Updated', user: r.rows[0] });
+}));
+
+// Support: a user lost their phone and recovery codes. They log in with password only and set 2FA up again.
+router.post('/users/:id/reset-2fa', handle(async (req, res) => {
+  if (!/^[0-9a-f-]{36}$/i.test(req.params.id)) throw new HttpError(404, 'User not found');
+  const r = await query(
+    `UPDATE users SET totp_enabled=false, totp_secret=NULL, totp_pending_secret=NULL, totp_last_step=NULL, recovery_codes='[]', totp_enabled_at=NULL
+      WHERE id=$1 RETURNING id, email`, [req.params.id]
+  );
+  if (!r.rows.length) throw new HttpError(404, 'User not found');
+  await audit(req, '2fa_reset_by_admin', 'user', req.params.id, { email: r.rows[0].email });
+  res.json({ message: 'Two-factor login reset', user: r.rows[0] });
 }));
 
 router.get('/audit', handle(async (req, res) => {

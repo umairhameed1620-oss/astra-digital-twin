@@ -33,8 +33,17 @@ Built by Umair Hameed / FC Technologies.
 - Runs automatically every day; each run downloads as CSV or a PDF validation report.
 - Add up to 25 real satellites at once by NORAD ID, or a starter set of 20 well-known LEO satellites, with alerts off so they are tracked quietly.
 
+**Use your own precise orbit**
+- Upload a **CCSDS OEM** ephemeris (KVN or XML; EME2000/GCRF, ITRF or TEME; UTC/GPS/TAI/TT; optional covariance). ASTRA converts it to TEME, interpolates it and uses it instead of the public TLE for screening, Pc and manoeuvre planning, with the TLE as fallback outside its span.
+- Every event shows its **accuracy**: the combined 1-sigma position uncertainty in the encounter plane.
+
+**Work as a team**
+- Teams (organisations) share one fleet, with owner / admin / engineer / viewer roles, invitation links (emailed when SMTP is set up), removal and ownership hand-over. Alerts go to every member on their own channels.
+- **Two-factor login** (TOTP authenticator apps, QR set-up, single-use recovery codes, replay protection, encrypted secrets). Teams can require it for every member.
+- A built-in **user guide** (Help & guide page; source in `frontend/public/user-guide.md`).
+
 **Operate it like a product**
-- Roles (admin / engineer / viewer), per-user data isolation, audit trail, rate limiting, input validation.
+- Team roles, per-team data isolation, two-factor login, audit trail, rate limiting, input validation.
 - Mission lifecycle (planning → active → completed), spacecraft lifecycle (designed → launched → operational → decommissioned).
 - Docker Compose deployment with automatic HTTPS (Caddy), nightly database backups, health check, Prometheus/Grafana.
 - One-command server install: `scripts/deploy-vps.sh` (Docker, firewall, secrets, HTTPS; works without a domain).
@@ -69,7 +78,7 @@ Register with an email listed in `ADMIN_EMAILS` to get an admin account.
 ```bash
 cd backend && npm ci && npm run test:unit
 ```
-The unit tests cover the Foster Pc implementation (checked against closed-form results), TLE validation, CDM parsing, manoeuvre physics, and the CDM validation statistics.
+The unit tests cover the Foster Pc implementation (checked against closed-form results), TLE validation, CDM parsing, manoeuvre physics, the CDM validation statistics, TOTP (RFC 6238 vectors), OEM parsing and frame conversion (checked against Vallado's EME2000/TEME example).
 
 ---
 

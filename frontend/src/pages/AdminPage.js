@@ -125,7 +125,7 @@ const AdminPage = ({ user }) => {
                       <tr key={u.id} style={{ borderBottom: '1px solid var(--border)' }}>
                         <td style={{ padding: '10px 16px', fontSize: 13, fontWeight: 500 }}>{u.name}</td>
                         <td style={{ padding: '10px 16px', fontSize: 12, color: 'var(--text-muted)' }}>{u.email}</td>
-                        <td style={{ padding: '10px 16px', fontSize: 12, color: 'var(--text-muted)' }}>{u.organisation || '—'}</td>
+                        <td style={{ padding: '10px 16px', fontSize: 12, color: 'var(--text-muted)' }}>{u.organisation || '—'}{u.org_role ? ` · ${u.org_role}` : ''}{u.totp_enabled ? ' · 🔒' : ''}</td>
                         <td style={{ padding: '10px 16px' }}>
                           <select value={u.role} onChange={e => updateUser(u.id, { role: e.target.value })} style={{ width: 'auto', padding: '3px 8px', fontSize: 11 }}>
                             <option value="viewer">Viewer</option>
@@ -143,6 +143,13 @@ const AdminPage = ({ user }) => {
                           <button onClick={() => updateUser(u.id, { is_active: !u.is_active })} className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 11 }}>
                             {u.is_active ? 'Deactivate' : 'Activate'}
                           </button>
+                          {u.totp_enabled && (
+                            <button title="For a user who lost their phone and recovery codes" className="btn btn-secondary" style={{ padding: '4px 10px', fontSize: 11, marginLeft: 6 }}
+                              onClick={async () => {
+                                if (!window.confirm(`Reset two-factor login for ${u.email}? Check it is really them first. They can then sign in with their password and set it up again.`)) return;
+                                try { await API.post(`/admin/users/${u.id}/reset-2fa`); setUsers((prev) => prev.map((x) => (x.id === u.id ? { ...x, totp_enabled: false } : x))); } catch (err) { console.error(err); }
+                              }}>Reset 2FA</button>
+                          )}
                         </td>
                       </tr>
                     ))}

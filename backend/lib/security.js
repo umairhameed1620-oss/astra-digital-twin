@@ -43,6 +43,9 @@ const apply = (app) => {
   app.use('/api/', rateLimit({ ...json, windowMs: 15 * 60 * 1000, max: Number(process.env.RATE_LIMIT_MAX) || 600 }));
   app.use('/api/auth/login', rateLimit({ ...json, windowMs: 15 * 60 * 1000, max: Number(process.env.RATE_LIMIT_AUTH_MAX) || 20 }));
   app.use('/api/auth/register', rateLimit({ ...json, windowMs: 60 * 60 * 1000, max: 10 }));
+  // Two-factor codes: 10 tries per 15 minutes per IP on top of the per-code replay protection.
+  app.use('/api/auth/2fa/verify', rateLimit({ ...json, windowMs: 15 * 60 * 1000, max: Number(process.env.RATE_LIMIT_2FA_MAX) || 10 }));
+  app.use('/api/team/invitations/lookup', rateLimit({ ...json, windowMs: 15 * 60 * 1000, max: 30 }));
 };
 
 module.exports = { apply, allowedOrigins };

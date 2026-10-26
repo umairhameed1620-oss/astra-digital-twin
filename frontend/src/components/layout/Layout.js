@@ -9,9 +9,11 @@ const getNav = (role) => [
   { path: '/missions', label: 'Mission Control', icon: '🎯' },
   { path: '/alerts', label: 'Alerts', icon: '🔔' },
   { path: '/validation', label: 'Validation', icon: '✅' },
+  { path: '/team', label: 'Team', icon: '👥' },
   { path: '/ai', label: 'ARIA AI', icon: '🤖' },
   { path: '/analytics', label: 'Analytics', icon: '📊' },
   ...(role === 'admin' ? [{ path: '/admin', label: 'Admin', icon: '🔐' }] : []),
+  { path: '/help', label: 'Help & guide', icon: '📘' },
 ];
 
 const Layout = ({ children, user, onLogout }) => {
@@ -39,8 +41,11 @@ const Layout = ({ children, user, onLogout }) => {
         </nav>
         <div style={{ padding:'16px 12px', borderTop:'1px solid var(--border)' }}>
           {!collapsed && <div style={{ marginBottom:12 }}>
-            <div style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)' }}>{user?.name}</div>
-            <div style={{ fontSize:11, color:'var(--text-muted)' }}>{user?.role} · {user?.email}</div>
+            <Link to="/account" title="Account and two-factor login" style={{ textDecoration:'none' }}>
+              <div style={{ fontSize:13, fontWeight:600, color:'var(--text-primary)' }}>{user?.name} {user?.totpEnabled ? <span title="Two-factor login on" style={{ fontSize:11 }}>🔒</span> : null}</div>
+              <div style={{ fontSize:11, color:'var(--text-muted)' }}>{user?.organisation}{user?.orgRole ? ` · ${user.orgRole}` : ''}</div>
+              <div style={{ fontSize:11, color:'var(--text-muted)' }}>{user?.email}</div>
+            </Link>
           </div>}
           <button onClick={onLogout} className="btn btn-secondary" style={{ width:'100%', justifyContent:'center', padding:'8px 12px', fontSize:12 }}>{collapsed?'↩':'↩ Logout'}</button>
         </div>

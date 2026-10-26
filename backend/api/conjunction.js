@@ -27,24 +27,24 @@ const screenable = (sc) => {
 };
 
 router.get('/:id', handle(async (req, res) => {
-  const sc = await getOwned(req.params.id, req.user.id);
+  const sc = await getOwned(req.params.id, req.user.orgId);
   screenable(sc);
-  const report = await conj.screen(sc, await fleetOf(req.user.id));
+  const report = await conj.screen(sc, await fleetOf(req.user.orgId));
   const cdm = await query('SELECT COUNT(*)::int AS n FROM cdms WHERE spacecraft_id=$1 AND tca > NOW()', [sc.id]);
   res.json({ ...report, upcomingCdms: cdm.rows[0].n, lastAutomaticScreening: sc.last_screened_at });
 }));
 
 router.get('/:id/manoeuvre', handle(async (req, res) => {
-  const sc = await getOwned(req.params.id, req.user.id);
+  const sc = await getOwned(req.params.id, req.user.orgId);
   screenable(sc);
-  const base = await conj.screenDetailed(sc, await fleetOf(req.user.id));
+  const base = await conj.screenDetailed(sc, await fleetOf(req.user.orgId));
   res.json(await planFor(base, sc, req.query.threat ? String(req.query.threat).slice(0, 80) : undefined));
 }));
 
 router.get('/:id/report.pdf', handle(async (req, res) => {
-  const sc = await getOwned(req.params.id, req.user.id);
+  const sc = await getOwned(req.params.id, req.user.orgId);
   screenable(sc);
-  const base = await conj.screenDetailed(sc, await fleetOf(req.user.id));
+  const base = await conj.screenDetailed(sc, await fleetOf(req.user.orgId));
   const plan = await planFor(base, sc, req.query.threat ? String(req.query.threat).slice(0, 80) : undefined);
   const cdms = (await query('SELECT * FROM cdms WHERE spacecraft_id=$1 AND tca > NOW() - INTERVAL \'1 day\' ORDER BY tca ASC LIMIT 20', [sc.id])).rows;
   const buf = await pdf.build({ sc, report: base.report, manoeuvre: plan, cdms, user: req.user });

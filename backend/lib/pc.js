@@ -97,13 +97,14 @@ const hbrKm = () => (Number(process.env.PC_HBR_M) || 15) / 1000;
  * Estimated Pc for a screening event when only TLEs are available.
  * s1/s2: {r, v} states at TCA of twin and object; age1/age2: TLE ages (days) or null for design orbits.
  */
-const estimatePc = (s1, s2, age1, age2) => {
-  const sg1 = age1 == null ? DESIGN_SIGMA : tleSigmaRtn(age1);
+// opts.sigma1 = {r,t,n} km overrides the twin's sigma (e.g. from an operator ephemeris), opts.method names the source.
+const estimatePc = (s1, s2, age1, age2, opts = {}) => {
+  const sg1 = opts.sigma1 || (age1 == null ? DESIGN_SIGMA : tleSigmaRtn(age1));
   const sg2 = age2 == null ? DESIGN_SIGMA : tleSigmaRtn(age2);
   const c1 = O.covRtnToInertial(O.diagCov(sg1.r, sg1.t, sg1.n), s1.r, s1.v);
   const c2 = O.covRtnToInertial(O.diagCov(sg2.r, sg2.t, sg2.n), s2.r, s2.v);
   const res = foster(O.sub(s2.r, s1.r), O.sub(s2.v, s1.v), O.addCov(c1, c2), hbrKm());
-  return { ...res, method: 'Foster 2D, covariance estimated from TLE age' };
+  return { ...res, method: opts.method || 'Foster 2D, covariance estimated from TLE age' };
 };
 
 module.exports = { foster, estimatePc, tleSigmaRtn, hbrKm, erfc, Q, normInterval };

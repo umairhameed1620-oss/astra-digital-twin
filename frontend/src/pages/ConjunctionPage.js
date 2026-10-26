@@ -188,7 +188,9 @@ const ConjunctionPage = () => {
 
       {scr && (
         <div className="card" style={{ marginBottom: 16, fontSize: 12, color: 'var(--text-secondary)', display: 'flex', flexWrap: 'wrap', gap: '6px 22px' }}>
-          <span>🛰️ Twin orbit: <strong style={{ color: 'var(--accent-primary)' }}>{report.twin?.orbitSource === 'tle' ? `real TLE${report.twin.noradId ? `, NORAD ${report.twin.noradId}` : ''} (age ${report.twin.tleAgeDays} d)` : 'design orbit (not a real satellite)'}</strong></span>
+          <span>🛰️ Twin orbit: <strong style={{ color: 'var(--accent-primary)' }}>{report.twin?.orbitSource === 'ephemeris'
+            ? `operator ephemeris (OEM) until ${utc(report.twin.ephemeris?.stop)}${report.twin.ephemeris?.covariance ? ', with covariance' : ''}${report.twin.ephemeris?.tleFallback ? ', TLE after that' : ''}`
+            : report.twin?.orbitSource === 'tle' ? `real TLE${report.twin.noradId ? `, NORAD ${report.twin.noradId}` : ''} (age ${report.twin.tleAgeDays} d)` : 'design orbit (not a real satellite)'}</strong></span>
           <span>📡 <strong style={{ color: 'var(--accent-primary)' }}>{Number(scr.catalogObjects).toLocaleString()}</strong> tracked objects (CelesTrak)</span>
           <span><strong style={{ color: 'var(--accent-primary)' }}>{Number(scr.candidatesScreened).toLocaleString()}</strong> in the altitude shell, propagated with SGP4</span>
           <span>Window: next {scr.windowHours} h · alert radius {scr.reportThresholdKm} km</span>
@@ -273,6 +275,12 @@ const ConjunctionPage = () => {
                       <span className={`badge ${sevBadge[sev]}`}>{sev.toUpperCase()}</span>
                       <span className="badge badge-satellite">{ev.source === 'ASTRA fleet' ? ev.objectId : `NORAD ${ev.objectId}`}</span>
                       {ev.tleAgeDays != null && ev.source !== 'ASTRA fleet' && <span style={{ fontSize: 10, color: 'var(--text-muted)' }}>TLE age {ev.tleAgeDays} d</span>}
+                      {ev.uncertaintyKm != null && (
+                        <span title={`Combined 1-sigma position uncertainty in the encounter plane. Your orbit: ${ev.twinOrbitSource === 'ephemeris' ? 'operator ephemeris' : ev.twinOrbitSource === 'tle' ? 'public TLE' : 'design orbit'}.`}
+                          style={{ fontSize: 10, padding: '2px 8px', borderRadius: 10, border: '1px solid var(--border)', color: ev.accuracy === 'high' ? 'var(--accent-green)' : ev.accuracy === 'medium' ? 'var(--accent-amber)' : 'var(--accent-red)' }}>
+                          Accuracy {ev.accuracy} · ±{ev.uncertaintyKm < 1 ? `${Math.round(ev.uncertaintyKm * 1000)} m` : `${ev.uncertaintyKm.toFixed(1)} km`}
+                        </span>
+                      )}
                     </div>
                   </div>
                   <div style={{ textAlign: 'right' }}>

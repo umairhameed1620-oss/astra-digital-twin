@@ -152,7 +152,7 @@ const evaluate = (opt, twinFn, objFn, threat) => {
   };
   const m = goldenMin(dist, ref - 10 * 60000, ref + 10 * 60000);
   const s1 = twinNew(m.t), s2 = objFn(m.t);
-  const est = PC.estimatePc(s1, s2, threat.ageTwin, threat.ageObj);
+  const est = PC.estimatePc(s1, s2, threat.ageTwin, threat.ageObj, threat.twinSigma ? { sigma1: threat.twinSigma } : {});
   const totalDvMs = opt.burns.reduce((s, b) => s + b.dvMs, 0);
   return {
     ...opt,

@@ -55,28 +55,40 @@ const persistScreening = async (sc, events) => {
   return escalated;
 };
 
+// Everyone in the twin's team gets the alert, each on their own channels and minimum severity.
 // One alert per object per run: repeated passes of the same object are summarised in a single message.
+const recipients = async (sc) => {
+  if (sc.organisation_id) {
+    return (await query(
+      `SELECT u.id, a.* FROM users u LEFT JOIN alert_settings a ON a.user_id = u.id
+        WHERE u.organisation_id=$1 AND u.is_active=true ORDER BY u.created_at`, [sc.organisation_id]
+    )).rows.map((r) => ({ userId: r.id, settings: r.user_id ? r : null }));
+  }
+  return [{ userId: sc.user_id, settings: await getSettings(sc.user_id) }];
+};
+
 const alertFor = async (sc, escalated) => {
-  if (sc.alerts_muted) return 0; // twin tracked for validation only
-  const settings = await getSettings(sc.user_id);
-  const min = RANK[(settings && settings.min_severity) || 'warning'];
+  if (sc.alerts_muted || !escalated.length) return 0; // twin tracked for validation only, or nothing new
   const groups = new Map();
   for (const e of escalated) {
-    if (RANK[e.severity] < min) continue;
     const k = String(e.objectId);
     if (!groups.has(k)) groups.set(k, []);
     groups.get(k).push(e);
   }
   let sent = 0;
-  for (const list of groups.values()) {
-    list.sort((a, b) => RANK[b.severity] - RANK[a.severity] || b.pc - a.pc);
-    const worst = list[0];
-    const more = list.length > 1
-      ? `\n\n${list.length} close approaches with this object in the window; earliest TCA ${new Date(Math.min(...list.map((e) => e.tca))).toISOString().replace('T', ' ').slice(0, 16)} UTC.`
-      : '';
-    const title = `[ASTRA ${worst.severity.toUpperCase()}] ${sc.name} conjunction with ${worst.objectName}${list.length > 1 ? ` (${list.length} passes)` : ''}`;
-    await notify.deliver({ userId: sc.user_id, scId: sc.id, eventId: worst.eventId, severity: worst.severity, title, message: fmtEvent(sc, worst) + more, settings });
-    sent++;
+  for (const { userId, settings } of await recipients(sc)) {
+    const min = RANK[(settings && settings.min_severity) || 'warning'];
+    for (const all of groups.values()) {
+      const list = all.filter((e) => RANK[e.severity] >= min).sort((a, b) => RANK[b.severity] - RANK[a.severity] || b.pc - a.pc);
+      if (!list.length) continue;
+      const worst = list[0];
+      const more = list.length > 1
+        ? `\n\n${list.length} close approaches with this object in the window; earliest TCA ${new Date(Math.min(...list.map((e) => e.tca))).toISOString().replace('T', ' ').slice(0, 16)} UTC.`
+        : '';
+      const title = `[ASTRA ${worst.severity.toUpperCase()}] ${sc.name} conjunction with ${worst.objectName}${list.length > 1 ? ` (${list.length} passes)` : ''}`;
+      await notify.deliver({ userId, scId: sc.id, eventId: worst.eventId, severity: worst.severity, title, message: fmtEvent(sc, worst) + more, settings });
+      sent++;
+    }
   }
   return sent;
 };

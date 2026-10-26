@@ -24,11 +24,11 @@ router.get('/tle/:norad', auth, handle(async (req, res) => {
 
 // Simulation start/stop only confirm ownership; they no longer overwrite the lifecycle status.
 router.post('/simulation/start/:id', auth, canWrite, handle(async (req, res) => {
-  const sc = await getOwned(req.params.id, req.user.id);
+  const sc = await getOwned(req.params.id, req.user.orgId);
   res.json({ message: 'Simulation started', spacecraftId: sc.id, config: sc.config || {} });
 }));
 router.post('/simulation/stop/:id', auth, canWrite, handle(async (req, res) => {
-  await getOwned(req.params.id, req.user.id);
+  await getOwned(req.params.id, req.user.orgId);
   res.json({ message: 'Simulation stopped' });
 }));
 
@@ -39,7 +39,7 @@ router.post('/ai/briefing', auth, (req, res) => res.json({ briefing: 'ARIA is of
 
 const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 router.get('/reports/:id', auth, handle(async (req, res) => {
-  const s = await getOwned(req.params.id, req.user.id);
+  const s = await getOwned(req.params.id, req.user.orgId);
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.setHeader('Content-Security-Policy', "default-src 'none'; style-src 'unsafe-inline'");
   res.send(`<html><body style="font-family:monospace;background:#020408;color:#00d4ff;padding:40px"><h1>ASTRA Report</h1><h2>${esc(s.name)}</h2><p>Type: ${esc(s.type)}</p><p>Status: ${esc(s.status)}</p></body></html>`);

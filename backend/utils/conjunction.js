@@ -10,6 +10,7 @@ const O = require('../lib/orbit');
 const PC = require('../lib/pc');
 const { parseTle } = require('../lib/tle');
 const { getText } = require('../lib/net');
+const OEM = require('../lib/oem');
 
 const GROUPS = [
   'active',              // all active payloads (Starlink, OneWeb, ISS ...)
@@ -140,16 +141,30 @@ const RECOMMEND = {
   nominal: 'No action required.',
 };
 
+const inEphemeris = (model, ms) => model.kind === 'ephemeris' && ms >= model.eph.t[0] && ms <= model.eph.t[model.eph.t.length - 1];
+
 const twinAgeDays = (model, atMs) => {
-  if (model.kind !== 'tle') return null;
-  return (atMs - O.tleEpochMs(O.satrec(model.l1, model.l2))) / 86400000;
+  const m = model.kind === 'ephemeris' ? (inEphemeris(model, atMs) ? null : model.fallback) : model;
+  if (!m || m.kind !== 'tle') return null;
+  return (atMs - O.tleEpochMs(O.satrec(m.l1, m.l2))) / 86400000;
 };
+
+// Where the twin's position at `ms` comes from, and its 1-sigma uncertainty (km, RTN) when not the TLE model.
+const twinOrbit = (model, ms) => {
+  if (inEphemeris(model, ms)) { const s = OEM.sigmaAt(model.eph, ms); return { source: 'ephemeris', sigma: s, note: s.source }; }
+  if (model.kind === 'tle' || (model.kind === 'ephemeris' && model.fallback)) return { source: 'tle', sigma: null };
+  return { source: 'design', sigma: null };
+};
+
+const ACCURACY = (km) => (km < 0.3 ? 'high' : km < 1.5 ? 'medium' : 'low');
 
 // Turn raw worker events into scored events (Pc, severity), keeping states for manoeuvre analysis.
 const scoreEvents = (raw, model) => raw.map((e) => {
   const ageObj = e.objEpochMs ? (e.tca - e.objEpochMs) / 86400000 : null;
   const ageTwin = twinAgeDays(model, e.tca);
-  const est = PC.estimatePc(e.twin, e.obj, ageTwin, ageObj);
+  const orbit = twinOrbit(model, e.tca);
+  const est = PC.estimatePc(e.twin, e.obj, ageTwin, ageObj, orbit.sigma
+    ? { sigma1: orbit.sigma, method: `Foster 2D, operator ephemeris (${orbit.note}) + object TLE age` } : {});
   const severity = classify(est.pc, e.missKm);
   return {
     ...e,
@@ -158,6 +173,9 @@ const scoreEvents = (raw, model) => raw.map((e) => {
     pcMethod: est.method,
     ageObj,
     ageTwin,
+    twinOrbitSource: orbit.source,
+    twinSigma: orbit.sigma,
+    uncertaintyKm: est.sigmaMajorKm,
     severity,
   };
 }).sort((a, b) => SEV_RANK[b.severity] - SEV_RANK[a.severity] || b.pc - a.pc || a.missKm - b.missKm);
@@ -175,16 +193,21 @@ const publicEvent = (e, now) => ({
   collisionProbability: e.pc.toExponential(1),
   pcMethod: e.pcMethod,
   tleAgeDays: e.ageObj != null ? e.ageObj.toFixed(1) : null,
+  twinOrbitSource: e.twinOrbitSource,
+  uncertaintyKm: e.uncertaintyKm != null ? Number(e.uncertaintyKm.toFixed(3)) : null,
+  accuracy: e.uncertaintyKm != null ? ACCURACY(e.uncertaintyKm) : null,
   recommendation: RECOMMEND[e.severity],
 });
 
-const cacheKey = (sc, hours) => `${sc.id}:${sc.tle_line1 || ''}:${sc.tle_line2 || ''}:${JSON.stringify(O.parseConfig(sc.config))}:${hours}`;
+const cacheKey = (sc, hours) => `${sc.id}:${sc.tle_line1 || ''}:${sc.tle_line2 || ''}:${sc.ephemeris ? sc.ephemeris.id : ''}:${JSON.stringify(O.parseConfig(sc.config))}:${hours}`;
 
 /**
  * Screen a twin against the catalogue and the rest of its fleet.
  * Returns { report (API-safe), events (scored, with states), model, catalog meta }.
  */
-const screenDetailed = async (sc, fleet = [], { hours = WINDOW_HOURS, force = false } = {}) => {
+const screenDetailed = async (sc, fleet = [], { hours: wantHours = WINDOW_HOURS, force = false } = {}) => {
+  await require('../lib/ephemeris').attach([sc, ...fleet]);
+  let hours = wantHours;
   const key = cacheKey(sc, hours);
   const hit = results.get(key);
   if (!force && hit && Date.now() - hit.at < RESULT_TTL_MS) return hit.data;
@@ -193,8 +216,16 @@ const screenDetailed = async (sc, fleet = [], { hours = WINDOW_HOURS, force = fa
   const job = (async () => {
     const cat = await loadCatalog();
     const model = O.twinModel(sc);
+    if (model.kind === 'ephemeris' && !model.fallback) {
+      // No TLE to fall back on: screen only while the ephemeris covers the window.
+      const { t } = model.eph;
+      if (Date.now() < t[0]) throw new Error(`The uploaded ephemeris starts at ${new Date(t[0]).toISOString()}; link a TLE or upload one that covers now`);
+      hours = Math.min(hours, (t[t.length - 1] - Date.now()) / 3600000);
+      if (hours < 0.5) throw new Error('The uploaded ephemeris has ended; upload a newer OEM or link a TLE');
+    }
     const el = O.describe(model);
-    const ownNorad = model.kind === 'tle' ? String(Number(model.l1.slice(2, 7))) : null;
+    const noradOf = (m) => (m.kind === 'tle' ? String(Number(m.l1.slice(2, 7))) : m.norad ? String(Number(m.norad)) : null);
+    const ownNorad = noradOf(model);
     const lo = O.RE + el.perigeeKm - SHELL_PAD_KM;
     const hi = O.RE + el.apogeeKm + SHELL_PAD_KM;
     const candidates = cat.objects
@@ -204,7 +235,7 @@ const screenDetailed = async (sc, fleet = [], { hours = WINDOW_HOURS, force = fa
       .filter((f) => String(f.id) !== String(sc.id))
       .map((f) => ({ name: f.name, id: String(f.id), model: O.twinModel(f) }))
       .filter((f) => {
-        if (f.model.kind === 'tle' && ownNorad && String(Number(f.model.l1.slice(2, 7))) === ownNorad) return false;
+        if (ownNorad && noradOf(f.model) === ownNorad) return false;
         try { const e = O.describe(f.model); return O.RE + e.perigeeKm <= hi && O.RE + e.apogeeKm >= lo; } catch (e) { return false; }
       });
 
@@ -222,17 +253,20 @@ const screenDetailed = async (sc, fleet = [], { hours = WINDOW_HOURS, force = fa
       warningCount: events.filter((e) => e.severity === 'warning').length,
       events: events.slice(0, 25).map((e) => publicEvent(e, now)),
       twin: {
-        orbitSource: model.kind === 'tle' ? 'tle' : 'design',
+        orbitSource: model.kind === 'ephemeris' ? 'ephemeris' : model.kind === 'tle' ? 'tle' : 'design',
+        ephemeris: model.kind === 'ephemeris' ? { start: el.ephemerisStart, stop: el.ephemerisStop, points: model.eph.t.length, covariance: model.eph.cov.length > 0, tleFallback: !!model.fallback } : null,
         noradId: ownNorad ? Number(ownNorad) : null,
         tleEpoch: el.epoch,
-        tleAgeDays: model.kind === 'tle' ? Number(twinAgeDays(model, now).toFixed(2)) : null,
+        tleAgeDays: twinAgeDays(model, now) != null ? Number(twinAgeDays(model, now).toFixed(2)) : null,
         perigeeKm: Number(el.perigeeKm.toFixed(1)),
         apogeeKm: Number(el.apogeeKm.toFixed(1)),
         inclinationDeg: Number(el.inclinationDeg.toFixed(3)),
       },
       screening: {
         method: `SGP4 propagation of CelesTrak GP data, ${STEP_SEC} s grid search + golden-section refinement to TCA`,
-        pcModel: `Foster 2D, combined hard-body radius ${(PC.hbrKm() * 1000).toFixed(0)} m, covariance estimated from TLE age. Not an operational CDM.`,
+        pcModel: model.kind === 'ephemeris'
+          ? `Foster 2D, combined hard-body radius ${(PC.hbrKm() * 1000).toFixed(0)} m. Your orbit: operator ephemeris (${model.eph.cov.length ? 'its covariance' : 'default uncertainty, no covariance in the file'}); other objects: uncertainty from TLE age. Not an operational CDM.`
+          : `Foster 2D, combined hard-body radius ${(PC.hbrKm() * 1000).toFixed(0)} m, covariance estimated from TLE age. Not an operational CDM.`,
         thresholds: { critical: PC_CRITICAL, warning: PC_WARNING },
         windowHours: hours,
         windowStart: new Date(startMs).toISOString(),

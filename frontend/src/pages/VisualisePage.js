@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import OrbitalVisualiser from '../components/visualiser/OrbitalVisualiser';
 import { spacecraft as scApi, tle as tleApi, errorText } from '../utils/api';
+import EphemerisCard from '../components/ephemeris/EphemerisCard';
 
 const LIFECYCLE = [
   { key: 'designed', label: 'Designed', color: 'var(--text-muted)' },
@@ -310,7 +311,10 @@ const VisualisePage = () => {
               </div>
 
               {['satellite', 'station'].includes(selected.type) && (
-                <OrbitDataCard sc={selected} onUpdated={(u) => setSpacecraft((list) => list.map((s) => (String(s.id) === String(u.id) ? { ...s, ...u } : s)))} />
+                <>
+                  <OrbitDataCard sc={selected} onUpdated={(u) => setSpacecraft((list) => list.map((s) => (String(s.id) === String(u.id) ? { ...s, ...u } : s)))} />
+                  <EphemerisCard sc={selected} canWrite={(() => { try { return JSON.parse(localStorage.getItem('astra_user') || '{}').orgRole !== 'viewer'; } catch (e) { return true; } })()} />
+                </>
               )}
 
               {/* Orbital elements */}

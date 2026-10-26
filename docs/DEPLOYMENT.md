@@ -63,13 +63,21 @@ Create a free account at space-track.org, set `SPACETRACK_USER` and `SPACETRACK_
 
 Read and follow the Space-Track user agreement. In particular, do not redistribute Space-Track data outside the operators entitled to it.
 
-## 5. Validation against CDMs
+## 5. Teams, two-factor login and ephemerides
+
+- **Teams:** each sign-up creates a team with the new user as owner. Owners and admins invite colleagues from the **Team** page; with SMTP configured the invitation is emailed, otherwise copy the link. Links use `PUBLIC_URL`, or `https://ASTRA_DOMAIN` in production. With `ALLOW_REGISTRATION=false` only invited people can create accounts.
+- **Two-factor login:** set `TOTP_ENCRYPTION_KEY` once (the install script does this) and keep it with your backups of `.env`. If a user loses both their phone and recovery codes, a server admin can reset their 2FA on the Admin page.
+- **Operator ephemerides (CCSDS OEM):** uploaded on **3D Visualiser → Operator ephemeris** (up to 12 MB). nginx allows 12 MB request bodies on `/api/`.
+
+Upgrading from 2.2: migration 008 runs automatically. Every existing user becomes the owner of their own team, and their satellites, missions and validation history move into it. Users can then be invited into one shared team; if they were alone in their old team, their satellites move with them.
+
+## 6. Validation against CDMs
 
 The **Validation** page compares ASTRA's own prediction with every CDM stored for a NORAD-linked twin (Space-Track public CDMs and uploaded CDMs from the last `VALIDATION_LOOKBACK_DAYS`, default 14). For each CDM ASTRA propagates both objects from the latest public TLEs, finds its own TCA within ±45 minutes of the CDM's TCA and records the differences in TCA, miss distance, Pc and severity. A run happens automatically once a day after `VALIDATION_HOUR_UTC` (default 06) and can be started by hand; every run can be downloaded as CSV or PDF.
 
 Use **Add starter set** to track 20 well-known LEO satellites. They are added as Operational with alerts off, so they are screened and validated without sending alerts.
 
-## 6. Backups and restore
+## 7. Backups and restore
 
 The `backup` service writes a compressed dump to `./backups` every night at `BACKUP_HOUR_UTC` and keeps `BACKUP_KEEP_DAYS` days.
 
@@ -86,14 +94,14 @@ docker compose start backend
 ```
 Test a restore on a spare machine at least once a quarter.
 
-## 7. Monitoring
+## 8. Monitoring
 
 - **Uptime:** add an HTTPS monitor for `https://<your-domain>/api/health` in UptimeRobot, Better Stack or similar (alerts you if the site or database is down).
 - **Metrics:** Prometheus scrapes the backend. Grafana runs on `127.0.0.1:3001`; reach it through an SSH tunnel: `ssh -L 3001:localhost:3001 user@server`, then open http://localhost:3001.
 - **Logs:** `docker compose logs -f backend` (JSON lines in production).
 - **Scheduler status:** the Alerts page shows the last automatic check and any error.
 
-## 8. Configuration reference
+## 9. Configuration reference
 
 All settings are in `.env.example`, with comments. The most important are:
 
@@ -101,7 +109,9 @@ All settings are in `.env.example`, with comments. The most important are:
 |---|---|
 | `JWT_SECRET` | Session signing key (required, 32+ random characters) |
 | `ADMIN_EMAILS` | Emails promoted to admin |
-| `ALLOW_REGISTRATION` | `false` to stop self-sign-up |
+| `ALLOW_REGISTRATION` | `false` to stop new teams signing up (invitations still work) |
+| `TOTP_ENCRYPTION_KEY` | Encrypts two-factor secrets; keep it stable |
+| `PUBLIC_URL`, `INVITE_EXPIRY_DAYS` | Invitation links |
 | `ASTRA_DOMAIN` | Public domain for HTTPS |
 | `SMTP_*` | Email alerts |
 | `SPACETRACK_*` | Automatic CDM import |

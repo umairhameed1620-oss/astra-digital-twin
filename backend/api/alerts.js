@@ -2,7 +2,7 @@
 const express = require('express');
 const { z } = require('zod');
 const { query } = require('../lib/db');
-const { auth, canWrite } = require('../lib/auth');
+const { auth } = require('../lib/auth');
 const { handle, parse, HttpError } = require('../lib/http');
 const { audit } = require('../lib/audit');
 const notify = require('../lib/notify');
@@ -35,7 +35,7 @@ router.get('/settings', handle(async (req, res) => {
   res.json({ ...masked(await load(req.user.id)), emailDefault: req.user.email });
 }));
 
-router.put('/settings', canWrite, handle(async (req, res) => {
+router.put('/settings', handle(async (req, res) => {
   const b = parse(settingsSchema, req.body);
   const cur = await load(req.user.id);
   // An unchanged (masked) webhook keeps the stored value.
@@ -55,7 +55,7 @@ router.put('/settings', canWrite, handle(async (req, res) => {
   res.json(masked(r.rows[0]));
 }));
 
-router.post('/test', canWrite, handle(async (req, res) => {
+router.post('/test', handle(async (req, res) => {
   const settings = await load(req.user.id);
   const results = await notify.deliver({
     userId: req.user.id,

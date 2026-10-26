@@ -84,6 +84,7 @@ if [ ! -f .env ]; then
     echo "DB_NAME=astra"
     echo "REDIS_PASSWORD=$(rand 16)"
     echo "JWT_SECRET=$(rand 32)"
+    echo "TOTP_ENCRYPTION_KEY=$(rand 32)"
     echo "JWT_EXPIRES_IN=12h"
     echo "ADMIN_EMAILS=$ADMIN"
     echo "ALLOW_REGISTRATION=true"
@@ -117,7 +118,7 @@ for _ in $(seq 1 60); do
   if curl -fsS "https://$DOMAIN/api/health" >/dev/null 2>&1; then
     printf '\n\033[1;32mASTRA is live: https://%s\033[0m\n' "$DOMAIN"
     echo "1. Open the link and register with $(grep -E '^ADMIN_EMAILS=' .env | cut -d= -f2- | cut -d, -f1) (you become admin)."
-    echo "2. To stop strangers signing up afterwards: set ALLOW_REGISTRATION=false in $DIR/.env, then run: cd $DIR && $COMPOSE up -d backend"
+    echo "2. Invite colleagues from the Team page. To stop new teams signing up: set ALLOW_REGISTRATION=false in $DIR/.env, then run: cd $DIR && $COMPOSE up -d backend"
     echo "3. To update later: cd $DIR && bash scripts/update.sh"
     exit 0
   fi

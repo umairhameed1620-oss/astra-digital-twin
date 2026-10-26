@@ -78,4 +78,4 @@ const deliver = async ({ userId, scId, eventId, severity, title, message, settin
   return results;
 };
 
-module.exports = { deliver, validSlackUrl, smtpConfigured };
+module.exports = { deliver, validSlackUrl, smtpConfigured, sendEmail };

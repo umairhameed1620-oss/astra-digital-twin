@@ -14,7 +14,7 @@ const scheduler = require('./lib/scheduler');
 const metrics = require('./lib/metrics');
 const { SimulationEngine } = require('./utils/simulationEngine');
 
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 const PORT = Number(process.env.PORT) || 5001;
 
 const app = express();
@@ -22,7 +22,10 @@ const server = http.createServer(app);
 
 security.apply(app);
 app.use(metrics.middleware);
-app.use(express.json({ limit: '2mb' }));
+// Ephemeris uploads (CCSDS OEM, a week at 60 s steps is ~1-2 MB) get a larger body limit than everything else.
+const jsonSmall = express.json({ limit: '2mb' });
+const jsonLarge = express.json({ limit: '12mb' });
+app.use((req, res, next) => (req.method === 'POST' && /^\/api\/spacecraft\/[^/]+\/ephemeris$/.test(req.path) ? jsonLarge : jsonSmall)(req, res, next));
 app.get('/api/metrics', metrics.handler);
 
 // ---- API ----
@@ -32,6 +35,7 @@ app.use('/api/conjunction', require('./api/conjunction'));
 app.use('/api/missions', require('./api/missions'));
 app.use('/api/alerts', require('./api/alerts'));
 app.use('/api/validation', require('./api/validation'));
+app.use('/api/team', require('./api/team'));
 app.use('/api/admin', require('./api/admin'));
 app.use('/api', require('./api/misc'));
 
@@ -69,7 +73,10 @@ io.use(async (socket, next) => {
 
 const owns = async (userId, scId) => {
   if (!/^[0-9a-f-]{36}$/i.test(String(scId))) return null;
-  const r = await query('SELECT id, type, config FROM spacecraft WHERE id=$1 AND user_id=$2 AND is_deleted=false', [scId, userId]);
+  const r = await query(
+    `SELECT s.id, s.type, s.config FROM spacecraft s JOIN users u ON u.id=$2
+      WHERE s.id=$1 AND s.organisation_id=u.organisation_id AND s.is_deleted=false`, [scId, userId]
+  );
   return r.rows[0] || null;
 };
 

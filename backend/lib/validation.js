@@ -11,6 +11,7 @@ const spacetrack = require('./spacetrack');
 const CDM = require('./cdm');
 const events = require('./events');
 const conj = require('../utils/conjunction');
+const OEM = require('./oem');
 
 const SEARCH_MIN = 45;      // search +/- this many minutes around the CDM TCA
 const STEP_SEC = 10;
@@ -36,7 +37,7 @@ const goldenMin = (f, lo, hi) => {
  * Returns { tcaMs, missKm, relSpeedKms, twin:{r,v}, obj:{r,v} } or null if propagation fails.
  */
 const closestApproach = (twinTle, objTle, aroundMs, searchMin = SEARCH_MIN) => {
-  const f1 = O.stateFn({ kind: 'tle', l1: twinTle.l1, l2: twinTle.l2 });
+  const f1 = twinTle.fn || O.stateFn({ kind: 'tle', l1: twinTle.l1, l2: twinTle.l2 });
   const f2 = O.stateFn({ kind: 'tle', l1: objTle.l1, l2: objTle.l2 });
   const dist = (ms) => {
     const a = f1(ms); const b = f2(ms);
@@ -72,9 +73,11 @@ const tleAgeDays = (tle, atMs) => (atMs - O.tleEpochMs(O.satrec(tle.l1, tle.l2))
 const compare = (twinTle, objTle, cdm) => {
   const ca = closestApproach(twinTle, objTle, cdm.tcaMs);
   if (!ca) return { status: 'propagation_failed' };
-  const ageTwin = tleAgeDays(twinTle, ca.tcaMs);
+  // Twin source: an operator ephemeris (with its own uncertainty) or a TLE.
+  const sigma = twinTle.sigmaAt ? twinTle.sigmaAt(ca.tcaMs) : null;
+  const ageTwin = sigma || !twinTle.l1 ? null : tleAgeDays(twinTle, ca.tcaMs);
   const ageObj = tleAgeDays(objTle, ca.tcaMs);
-  const est = PC.estimatePc(ca.twin, ca.obj, ageTwin, ageObj);
+  const est = PC.estimatePc(ca.twin, ca.obj, ageTwin, ageObj, sigma ? { sigma1: sigma } : {});
   const astraSev = conj.classify(est.pc, ca.missKm);
   const cdmSev = cdm.pc != null && cdm.missKm != null ? conj.classify(cdm.pc, cdm.missKm) : null;
   const lr = cdm.pc != null ? Math.log10(Math.max(est.pc, PC_FLOOR)) - Math.log10(Math.max(cdm.pc, PC_FLOOR)) : null;
@@ -92,6 +95,7 @@ const compare = (twinTle, objTle, cdm) => {
     severityAgrees: cdmSev ? cdmSev === astraSev : null,
     flagged: ca.missKm <= REPORT_KM,
     twinTleAgeDays: ageTwin,
+    twinOrbitSource: sigma ? 'ephemeris' : 'tle',
     objTleAgeDays: ageObj,
   };
 };
@@ -135,13 +139,13 @@ const summarise = (rows) => {
   };
 };
 
-const lastFetch = new Map(); // userId -> ms
+const lastFetch = new Map(); // orgId -> ms
 
 // Pull the latest public CDMs for these twins from Space-Track (at most once an hour per user).
-const refreshCdms = async (userId, twins) => {
+const refreshCdms = async (orgId, twins) => {
   if (!spacetrack.configured() || !twins.length) return { fetched: false, reason: spacetrack.configured() ? 'no satellites' : 'Space-Track not configured' };
-  if (Date.now() - (lastFetch.get(userId) || 0) < 3600000) return { fetched: false, reason: 'fetched within the last hour' };
-  lastFetch.set(userId, Date.now());
+  if (Date.now() - (lastFetch.get(orgId) || 0) < 3600000) return { fetched: false, reason: 'fetched within the last hour' };
+  lastFetch.set(orgId, Date.now());
   const rows = await spacetrack.upcomingCdms(twins.map((t) => t.norad_id));
   const cdms = rows.map((r) => CDM.parse(JSON.stringify(r))[0]);
   let stored = 0;
@@ -165,17 +169,18 @@ const objectTle = async (norad, cache) => {
  * Run a validation for a user's NORAD-linked twins (optionally a subset).
  * Returns the stored run { id, created_at, summary, rows }.
  */
-const run = async (userId, { spacecraftIds = null, trigger = 'manual' } = {}) => {
-  const params = [userId];
+const run = async ({ orgId, userId }, { spacecraftIds = null, trigger = 'manual' } = {}) => {
+  const params = [orgId];
   let filter = '';
   if (spacecraftIds && spacecraftIds.length) { params.push(spacecraftIds); filter = 'AND id = ANY($2::uuid[])'; }
   const twins = (await query(
-    `SELECT * FROM spacecraft WHERE user_id=$1 AND is_deleted=false AND norad_id IS NOT NULL AND tle_line1 IS NOT NULL ${filter} ORDER BY name`, params
+    `SELECT * FROM spacecraft WHERE organisation_id=$1 AND is_deleted=false AND norad_id IS NOT NULL ${filter} ORDER BY name`, params
   )).rows;
+  await require('./ephemeris').attach(twins);
 
   let cdmRefresh;
   try { await conj.loadCatalog(); } catch (e) { log.warn('Validation: catalogue unavailable, using cached / per-object TLEs', { error: e.message }); }
-  try { cdmRefresh = await refreshCdms(userId, twins); } catch (e) { cdmRefresh = { fetched: false, reason: e.message }; }
+  try { cdmRefresh = await refreshCdms(orgId, twins); } catch (e) { cdmRefresh = { fetched: false, reason: e.message }; }
 
   const tleCache = new Map();
   const rows = [];
@@ -183,7 +188,13 @@ const run = async (userId, { spacecraftIds = null, trigger = 'manual' } = {}) =>
     const cdms = (await query(
       `SELECT * FROM cdms WHERE spacecraft_id=$1 AND tca > NOW() - make_interval(days => $2) ORDER BY tca DESC LIMIT 100`, [sc.id, LOOKBACK_DAYS]
     )).rows;
-    const twinTle = { l1: sc.tle_line1, l2: sc.tle_line2 };
+    if (!sc.tle_line1 && !sc.ephemeris) continue;
+    let twinTle = { l1: sc.tle_line1, l2: sc.tle_line2 };
+    if (sc.ephemeris) {
+      const model = O.twinModel(sc);
+      const inSpan = (ms) => ms >= model.eph.t[0] && ms <= model.eph.t[model.eph.t.length - 1];
+      twinTle = { ...twinTle, fn: O.stateFn(model), sigmaAt: (ms) => (inSpan(ms) ? OEM.sigmaAt(model.eph, ms) : null) };
+    }
     for (const c of cdms) {
       if (rows.length >= MAX_ROWS) break;
       const tcaMs = new Date(c.tca).getTime(); // TIMESTAMP columns are UTC (process TZ=UTC)
@@ -212,15 +223,15 @@ const run = async (userId, { spacecraftIds = null, trigger = 'manual' } = {}) =>
     method: 'ASTRA: SGP4 on the latest public TLEs, 10 s search + golden-section refinement within ±45 min of the CDM TCA; Pc by Foster 2D with TLE-age covariance. Reference: the CDM (CSpOC high-accuracy catalogue for Space-Track CDMs).',
   };
   const r = await query(
-    'INSERT INTO validation_runs (user_id, trigger, summary, rows) VALUES ($1,$2,$3,$4) RETURNING id, trigger, created_at, summary, rows',
-    [userId, trigger, JSON.stringify(summary), JSON.stringify(rows)]
+    'INSERT INTO validation_runs (user_id, organisation_id, trigger, summary, rows) VALUES ($1,$5,$2,$3,$4) RETURNING id, trigger, created_at, summary, rows',
+    [userId, trigger, JSON.stringify(summary), JSON.stringify(rows), orgId]
   );
   return r.rows[0];
 };
 
 /** Cumulative summary across all of a user's runs (latest comparison per CDM). */
-const cumulative = async (userId) => {
-  const runs = (await query('SELECT rows FROM validation_runs WHERE user_id=$1 ORDER BY created_at ASC', [userId])).rows;
+const cumulative = async (orgId) => {
+  const runs = (await query('SELECT rows FROM validation_runs WHERE organisation_id=$1 ORDER BY created_at ASC', [orgId])).rows;
   const byCdm = new Map();
   for (const r of runs) for (const row of r.rows || []) byCdm.set(`${row.spacecraftId}:${row.cdmId}`, row);
   const rows = [...byCdm.values()];

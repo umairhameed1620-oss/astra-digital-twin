@@ -75,11 +75,16 @@ const sgp4State = (rec, ms) => {
 
 // ---------- twin models ----------
 // A twin is either linked to a real TLE (SGP4) or an idealised circular orbit from its config.
+// An operator ephemeris (CCSDS OEM, attached by lib/ephemeris) takes priority over the TLE inside its time span;
+// outside it the TLE (if any) is used.
 const twinModel = (sc) => {
   const cfg = parseConfig(sc.config);
-  if (sc.tle_line1 && sc.tle_line2) {
-    return { kind: 'tle', l1: sc.tle_line1, l2: sc.tle_line2, norad: sc.norad_id || null };
+  const tle = sc.tle_line1 && sc.tle_line2 ? { kind: 'tle', l1: sc.tle_line1, l2: sc.tle_line2, norad: sc.norad_id || null } : null;
+  if (sc.ephemeris && Array.isArray(sc.ephemeris.t) && sc.ephemeris.t.length) {
+    const e = sc.ephemeris;
+    return { kind: 'ephemeris', ephId: e.id, eph: { t: e.t, r: e.r, v: e.v, cov: e.cov || [] }, fallback: tle, norad: sc.norad_id || null };
   }
+  if (tle) return tle;
   const altitude = Number(cfg.altitude) || 550;
   const a = RE + altitude;
   return {
@@ -108,6 +113,11 @@ const circularState = (o, ms) => {
 
 // Returns a function ms -> {r, v} (or null) for a twin model.
 const stateFn = (model) => {
+  if (model.kind === 'ephemeris') {
+    const f = require('./oem').interpolator(model.eph);
+    const fb = model.fallback ? stateFn(model.fallback) : null;
+    return (ms) => f(ms) || (fb ? fb(ms) : null);
+  }
   if (model.kind === 'tle') {
     const rec = satrec(model.l1, model.l2);
     return (ms) => sgp4State(rec, ms);
@@ -116,7 +126,38 @@ const stateFn = (model) => {
 };
 
 // Mean orbital elements of a twin, for display and shell filtering.
+// Osculating elements from a state (used for ephemeris twins).
+const elementsFromState = ({ r, v }) => {
+  const rn = norm(r); const v2 = dot(v, v);
+  const a = 1 / (2 / rn - v2 / MU);
+  const h = cross(r, v);
+  const eVec = sub(scale(r, v2 / MU - 1 / rn), scale(v, dot(r, v) / MU));
+  const e = norm(eVec);
+  const inc = Math.acos(Math.max(-1, Math.min(1, h.z / norm(h))));
+  const raan = Math.atan2(h.x, -h.y);
+  return { a, e, inc, raan: raan < 0 ? raan + 2 * Math.PI : raan };
+};
+
 const describe = (model) => {
+  if (model.kind === 'ephemeris') {
+    const { t } = model.eph;
+    const at = Math.min(Math.max(Date.now(), t[0]), t[t.length - 1]);
+    const st = stateFn(model)(at);
+    const el = elementsFromState(st);
+    return {
+      a: el.a,
+      perigeeKm: el.a * (1 - el.e) - RE,
+      apogeeKm: el.a * (1 + el.e) - RE,
+      altitudeKm: el.a - RE,
+      inclinationDeg: el.inc / DEG,
+      raanDeg: el.raan / DEG,
+      eccentricity: el.e,
+      periodMin: (2 * Math.PI * Math.sqrt(el.a ** 3 / MU)) / 60,
+      epoch: new Date(at).toISOString(),
+      ephemerisStart: new Date(t[0]).toISOString(),
+      ephemerisStop: new Date(t[t.length - 1]).toISOString(),
+    };
+  }
   if (model.kind === 'tle') {
     const rec = satrec(model.l1, model.l2);
     const n = rec.no / 60; // rad/s (Kozai mean motion in rad/min -> rad/s)
@@ -200,5 +241,5 @@ module.exports = {
   v3, add, sub, scale, dot, cross, norm, unit,
   rtnBasis, covRtnToInertial, addCov, diagCov,
   hash, parseConfig, tleEpochMs, satrec, sgp4State,
-  twinModel, circularState, stateFn, describe, propagate,
+  twinModel, circularState, stateFn, describe, propagate, elementsFromState,
 };

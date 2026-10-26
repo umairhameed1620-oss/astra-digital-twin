@@ -38,6 +38,7 @@
     "pdfkit": "^0.15.2",
     "pg": "^8.11.3",
     "prom-client": "^15.1.0",
+    "qrcode": "1.5.4",
     "rate-limit-redis": "^4.2.0",
     "response-time": "^2.3.2",
     "satellite.js": "^5.0.0",
